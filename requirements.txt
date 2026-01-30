@@ -2,7 +2,8 @@ streamlit
 langchain-openai
 langchain-community
 tavily-python
-youtube-transcript-api
+youtube-transcript-api==0.6.1
 openai
 tiktoken
 beautifulsoup4
+
