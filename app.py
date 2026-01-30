@@ -4,7 +4,10 @@ from langchain_community.document_loaders import WebBaseLoader
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_community.tools.tavily_search import TavilySearchResults
-import re
+import yt_dlp
+import openai
+import os
+import tempfile
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="Veritas Lens", page_icon="👁️", layout="wide")
@@ -36,7 +39,7 @@ with st.sidebar:
         tavily_api_key = st.text_input("Tavily API Key", type="password")
         
     st.markdown("---")
-    st.info("👁️ **Veritas Lens**는 URL을 분석하여 팩트와 편향성을 꿰뚫어 봅니다.")
+    st.info("👁️ **Veritas Lens**는 자막이 없으면 AI가 직접 영상을 듣고 분석합니다.")
 
 # --- 공통 함수 ---
 def get_llm(openai_key):
@@ -45,39 +48,75 @@ def get_llm(openai_key):
 def get_search_tool(tavily_key):
     return TavilySearchResults(tavily_api_key=tavily_key, k=3)
 
+# 📢 Whisper Fallback 함수 (오디오 -> 텍스트)
+def transcribe_with_whisper(url, api_key):
+    client = openai.OpenAI(api_key=api_key)
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # yt-dlp 설정 (오디오만 다운로드, 용량 최소화)
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128',
+            }],
+            'outtmpl': os.path.join(temp_dir, 'audio.%(ext)s'),
+            'quiet': True,
+            'cookiefile': 'cookies.txt' # 쿠키 파일이 있다면 사용 (선택)
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                
+            audio_path = os.path.join(temp_dir, "audio.mp3")
+            
+            # Whisper API 호출 (비용 발생: 분당 $0.006)
+            with open(audio_path, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1", 
+                    file=audio_file,
+                    response_format="text"
+                )
+            return transcript
+            
+        except Exception as e:
+            raise Exception(f"Whisper 변환 실패: {str(e)}")
+
 # ---------------------------------------------------------
-# 🧠 분석 로직 1: 유튜브 (YoutubeLoader 사용)
+# 🧠 분석 로직 1: 유튜브 (Hybrid Mode)
 # ---------------------------------------------------------
-def analyze_youtube(url, llm, search):
-    # 1. 자막 추출 (LangChain Loader 사용)
+def analyze_youtube(url, llm, search, api_key):
+    full_text = ""
+    
+    # 1. 자막 추출 시도 (1차: 자막 API)
     try:
-        with st.spinner("🎧 영상의 자막을 추출하고 있습니다..."):
-            # 언어 우선순위: 한국어 -> 영어 -> 번역 시도
+        with st.spinner("🎧 영상의 자막을 찾고 있습니다..."):
             loader = YoutubeLoader.from_youtube_url(
-                url,
-                add_video_info=False,
-                language=["ko", "en"],
-                translation="ko" 
+                url, add_video_info=False, language=["ko", "en"], translation="ko"
             )
             docs = loader.load()
-            full_text = docs[0].page_content[:6000]
+            full_text = docs[0].page_content[:10000]
             
-    except Exception as e:
-        st.error(f"❌ 자막을 가져올 수 없습니다.")
-        st.warning(f"원인: {e}")
-        st.info("💡 팁: Streamlit Cloud 서버 IP가 유튜브에 차단되었을 수 있습니다. 이 경우 로컬(내 컴퓨터)에서 실행하면 해결됩니다.")
-        return
+    except Exception:
+        # 2. 실패 시 Whisper 전환 (2차: AI 청취)
+        st.warning("⚠️ 유튜브 자막이 막혀있거나 없습니다. AI가 직접 영상을 듣고 분석합니다. (Whisper 모드 가동)")
+        try:
+            with st.spinner("🎙️ 영상을 다운로드하여 듣는 중입니다... (시간이 조금 걸립니다)"):
+                full_text = transcribe_with_whisper(url, api_key)
+        except Exception as e:
+            st.error(f"❌ 분석 실패: 서버 IP가 차단되었거나 영상을 처리할 수 없습니다.\n({e})")
+            return
 
-    # 2. 분석 시작
-    with st.spinner("👁️ Veritas Lens가 영상을 분석 중입니다..."):
+    # 3. 분석 시작
+    with st.spinner("👁️ Veritas Lens가 내용을 분석 중입니다..."):
         analysis_prompt = PromptTemplate.from_template("""
-        다음 유튜브 스크립트를 분석해줘:
-        
-        [스크립트]
+        다음 텍스트를 분석해줘:
         {text}
         
         [요청사항]
-        1. 이 영상의 핵심 주제를 3줄로 요약해줘.
+        1. 핵심 주제를 3줄로 요약해줘.
         2. 팩트체크가 필요한 구체적인 주장(Fact Claims) 3가지만 추출해줘.
         
         형식:
@@ -88,7 +127,7 @@ def analyze_youtube(url, llm, search):
         - 주장3
         """)
         
-        analysis_result = llm.invoke(analysis_prompt.format(text=full_text)).content
+        analysis_result = llm.invoke(analysis_prompt.format(text=full_text[:15000])).content # 컨텍스트 길이 고려
         
         summary_text = ""
         claims_list = []
@@ -128,10 +167,10 @@ def analyze_article(url, llm, search):
         with st.spinner("📰 기사 본문을 읽어오는 중입니다..."):
             loader = WebBaseLoader(url)
             docs = loader.load()
-            article_content = docs[0].page_content[:6000]
+            article_content = docs[0].page_content[:10000]
             article_title = docs[0].metadata.get('title', '제목 없음')
     except Exception as e:
-        st.error(f"기사를 읽어올 수 없습니다. (접근 차단 또는 잘못된 URL): {e}")
+        st.error(f"기사를 읽어올 수 없습니다: {e}")
         return
 
     with st.spinner("⚖️ 기사의 편향성과 맥락을 분석 중입니다..."):
@@ -142,7 +181,7 @@ def analyze_article(url, llm, search):
         다음 3가지를 분석해줘:
         1. 자극성 점수 (0~100점)
         2. 이 기사의 프레이밍(의도) 요약
-        3. 이 기사의 주장을 검증하기 위해 검색해야 할 키워드 1개
+        3. 검색해야 할 키워드 1개
         
         형식:
         SCORE: ...
@@ -189,7 +228,8 @@ if st.button("Analyze Link 🚀"):
         llm_instance = get_llm(openai_api_key)
         search_tool = get_search_tool(tavily_api_key)
         
-        if "youtube.com" in url_input or "youtu.be" in url_input:
-            analyze_youtube(url_input, llm_instance, search_tool)
+        if "youtube.com" in url_input or "youtu.be" in url_input or "youtu.be" in url_input:
+            # 유튜브 모드: api_key 추가 전달 (Whisper용)
+            analyze_youtube(url_input, llm_instance, search_tool, openai_api_key)
         else:
             analyze_article(url_input, llm_instance, search_tool)
