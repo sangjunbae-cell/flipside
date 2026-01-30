@@ -5,3 +5,4 @@ tavily-python
 youtube-transcript-api
 openai
 tiktoken
+beautifulsoup4
