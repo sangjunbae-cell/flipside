@@ -28,8 +28,19 @@ with st.sidebar:
     st.markdown("---")
     
     # API 키 입력 (배포 시에는 Secrets로 관리 가능하지만, MVP에선 입력창 제공)
-    with st.expander("🔐 API 설정", expanded=True):
+   with st.sidebar:
+    # ... (기존 제목 등 유지) ...
+    
+    # Secrets에서 키를 먼저 찾아봅니다
+    if "OPENAI_API_KEY" in st.secrets:
+        openai_api_key = st.secrets["OPENAI_API_KEY"]
+    else:
+        # Secrets에 없으면 입력창을 띄웁니다
         openai_api_key = st.text_input("OpenAI API Key", type="password")
+
+    if "TAVILY_API_KEY" in st.secrets:
+        tavily_api_key = st.secrets["TAVILY_API_KEY"]
+    else:
         tavily_api_key = st.text_input("Tavily API Key", type="password")
         
     st.info("💡 이 툴은 AI와 실시간 검색(RAG)을 결합하여 콘텐츠의 편향성과 사실 여부를 검증합니다.")
@@ -171,4 +182,5 @@ def run_news_analysis():
 if mode == "🎥 유튜브 영상 분석":
     run_youtube_analysis()
 else:
+
     run_news_analysis()
