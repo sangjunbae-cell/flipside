@@ -3,7 +3,8 @@ langchain-openai
 langchain-community
 tavily-python
 youtube-transcript-api
-pytube
+yt-dlp
 openai
 tiktoken
 beautifulsoup4
+pydub
