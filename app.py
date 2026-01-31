@@ -37,13 +37,13 @@ with st.sidebar:
     else:
         tavily_api_key = st.text_input("Tavily API Key", type="password")
         
-    # RapidAPI Key (새로 추가!)
+    # RapidAPI Key
     st.markdown("---")
     st.subheader("📺 YouTube Unlocker")
     if "RAPIDAPI_KEY" in st.secrets:
         rapid_api_key = st.secrets["RAPIDAPI_KEY"]
     else:
-        rapid_api_key = st.text_input("RapidAPI Key (X-RapidAPI-Key)", type="password", help="RapidAPI에서 무료 키를 발급받으세요.")
+        rapid_api_key = st.text_input("RapidAPI Key (X-RapidAPI-Key)", type="password")
         
     st.info("👁️ **Veritas Lens**는 미들웨어 API를 통해 차단 없이 영상을 분석합니다.")
 
@@ -54,63 +54,59 @@ def get_llm(openai_key):
 def get_search_tool(tavily_key):
     return TavilySearchResults(tavily_api_key=tavily_key, k=3)
 
-# 🚀 [NEW] RapidAPI를 통한 자막 추출 함수
+# 🚀 [NEW] 구독하신 'YouTube Transcript 3' API 맞춤형 함수
 def get_transcript_via_api(video_url, api_key):
-    # 1. Video ID 추출
-    video_id = None
-    if "v=" in video_url:
-        video_id = video_url.split("v=")[1].split("&")[0]
-    elif "youtu.be" in video_url:
-        video_id = video_url.split("/")[-1]
-    elif "shorts" in video_url:
-        video_id = video_url.split("shorts/")[1].split("?")[0]
-        
-    if not video_id:
-        raise Exception("올바른 YouTube URL이 아닙니다.")
-
-    # 2. RapidAPI 호출 (예시: YouTube Transcripts API)
-    # *참고: 사용하시는 API에 따라 url과 header가 다를 수 있습니다. 아래는 일반적인 예시입니다.*
-    url = "https://youtube-transcripts.p.rapidapi.com/youtube/transcript"
-    querystring = {"url": f"https://www.youtube.com/watch?v={video_id}", "chunkSize": "500"}
+    # 1. API 엔드포인트 설정 (보내주신 코드 기반)
+    url = "https://youtube-transcript3.p.rapidapi.com/api/transcript-with-url"
     
-    headers = {
-        "X-RapidAPI-Key": api_key,
-        "X-RapidAPI-Host": "youtube-transcripts.p.rapidapi.com"
+    # 2. 파라미터 설정 (flat_text=true 옵션 사용으로 텍스트만 깔끔하게 받음)
+    # 팁: 한국어 분석을 위해 lang='ko'를 우선 시도합니다.
+    querystring = {
+        "url": video_url,
+        "flat_text": "true",
+        "lang": "ko" 
     }
 
+    headers = {
+        "x-rapidapi-key": api_key,
+        "x-rapidapi-host": "youtube-transcript3.p.rapidapi.com"
+    }
+
+    # 3. API 호출
     response = requests.get(url, headers=headers, params=querystring)
     
+    # 4. 에러 처리 및 언어 Fallback (한국어 없으면 영어로 재시도)
     if response.status_code != 200:
-        raise Exception(f"API 호출 실패 ({response.status_code}): {response.text}")
+        # 한국어가 없어서 에러가 났을 수도 있으니 영어로 재시도
+        querystring["lang"] = "en"
+        response = requests.get(url, headers=headers, params=querystring)
         
-    # 3. 데이터 파싱 (API마다 리턴 구조가 다르니 확인 필요)
-    # 보통 {'content': [...]} 형태로 옵니다.
+        if response.status_code != 200:
+            raise Exception(f"API 호출 실패 ({response.status_code}): {response.text}")
+
+    # 5. 데이터 파싱
     data = response.json()
     
-    # 텍스트만 합치기
-    # (이 API의 경우 content[0]['text'] 식이라고 가정)
-    full_text = ""
-    if "content" in data:
-        full_text = " ".join([item['text'] for item in data['content']])
+    # flat_text=true 옵션을 썼으므로, 보통 'transcript' 키에 통문장이 들어옵니다.
+    if "transcript" in data:
+        return data["transcript"][:15000] # 길이 제한
     else:
-        # 구조가 다를 경우 통째로 str 변환 (디버깅용)
-        full_text = str(data)
-        
-    return full_text[:15000]
+        # 만약 구조가 다르면 통째로 반환 (디버깅용)
+        return str(data)[:15000]
 
 # ---------------------------------------------------------
-# 🧠 분석 로직 1: 유튜브 (API 방식)
+# 🧠 분석 로직 1: 유튜브 (RapidAPI 사용)
 # ---------------------------------------------------------
 def analyze_youtube(url, llm, search, rapid_key):
     
     # 1. 자막 추출 (미들웨어 사용)
     full_text = ""
-    with st.spinner("🚀 차단 우회 API를 통해 자막을 가져오고 있습니다..."):
+    with st.spinner("🚀 RapidAPI를 통해 자막을 가져오고 있습니다..."):
         try:
             full_text = get_transcript_via_api(url, rapid_key)
         except Exception as e:
             st.error(f"❌ 자막 가져오기 실패: {e}")
-            st.warning("RapidAPI Key가 정확한지, 혹은 무료 사용량이 남았는지 확인해주세요.")
+            st.warning("RapidAPI Key가 정확한지 확인해주세요.")
             return
 
     # 2. 분석 시작
@@ -237,11 +233,11 @@ if st.button("Analyze Link 🚀"):
             if "RAPIDAPI_KEY" in st.secrets:
                 rapid_key = st.secrets["RAPIDAPI_KEY"]
             else:
-                # Secrets에 없으면 사이드바 입력값 확인
-                # (위 사이드바 코드에서 변수로 받았어야 함. 편의상 여기서는 직접 Secrets 체크만 함)
-                st.error("YouTube 분석을 위해선 RapidAPI Key가 필요합니다. (사이드바에 입력해주세요)")
-                st.stop()
+                rapid_key = st.text_input("RapidAPI Key", type="password") # Secrets에 없으면 입력받음
                 
-            analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
+            if rapid_key:
+                analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
+            else:
+                st.error("YouTube 분석을 위해 RapidAPI Key가 필요합니다.")
         else:
             analyze_article(url_input, llm_instance, search_tool)
