@@ -49,7 +49,7 @@ with st.sidebar:
 
 # --- 공통 함수 ---
 def get_llm(openai_key):
-    return ChatOpenAI(temperature=0, openai_api_key=openai_key, model_name="gpt-4o")
+    return ChatOpenAI(temperature=0, openai_api_key=openai_key, model_name="gpt-4o-mini")
 
 def get_search_tool(tavily_key):
     return TavilySearchResults(tavily_api_key=tavily_key, k=3)
@@ -241,3 +241,4 @@ if st.button("Analyze Link 🚀"):
                 st.error("YouTube 분석을 위해 RapidAPI Key가 필요합니다.")
         else:
             analyze_article(url_input, llm_instance, search_tool)
+
