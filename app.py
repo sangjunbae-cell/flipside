@@ -3,7 +3,8 @@ import requests
 import re
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_openai import ChatOpenAI
-from langchain.prompts import PromptTemplate
+# [변경됨] 최신 버전 호환성을 위해 langchain_core 사용
+from langchain_core.prompts import PromptTemplate
 from langchain_community.tools.tavily_search import TavilySearchResults
 
 # --- 페이지 설정 ---
@@ -328,3 +329,4 @@ if st.button("Analyze Link 🚀"):
                 analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
         else:
             analyze_article(url_input, llm_instance, search_tool)
+
