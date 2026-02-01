@@ -1,24 +1,24 @@
 import streamlit as st
+import requests
+import re
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import PromptTemplate
+from langchain.prompts import PromptTemplate
 from langchain_community.tools.tavily_search import TavilySearchResults
-import requests # API 호출용
-import re
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="Veritas Lens", page_icon="👁️", layout="wide")
 
-# --- CSS 커스텀 ---
+# --- CSS 커스텀 (입력창 등 기본 UI용) ---
 st.markdown("""
     <style>
     .main-title {font-size: 3rem; font-weight: 800; color: #111827; letter-spacing: -0.05rem;}
     .sub-title {font-size: 1.2rem; color: #6B7280; margin-bottom: 2rem;}
-    .card {background-color: #ffffff; padding: 25px; border-radius: 15px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 20px;}
-    .fact-box {padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left-width: 5px;}
-    .fact-true {background-color: #ecfdf5; border-color: #10b981; color: #065f46;}
-    .fact-check {background-color: #fff7ed; border-color: #f97316; color: #9a3412;}
-    .bias-gauge {font-size: 1.5rem; font-weight: bold; text-align: center; margin: 10px 0;}
+    div.stButton > button {
+        background-color: #2563EB; color: white; border-radius: 8px; 
+        padding: 0.5rem 1rem; font-weight: bold; border: none;
+    }
+    div.stButton > button:hover {background-color: #1D4ED8;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -43,237 +43,352 @@ with st.sidebar:
     if "RAPIDAPI_KEY" in st.secrets:
         rapid_api_key = st.secrets["RAPIDAPI_KEY"]
     else:
-        rapid_api_key = st.text_input("RapidAPI Key (X-RapidAPI-Key)", type="password")
+        rapid_api_key = st.text_input("RapidAPI Key", type="password")
         
-    st.info("👁️ **Veritas Lens**는 미들웨어 API를 통해 차단 없이 영상을 분석합니다.")
+    st.info("👁️ **Veritas Lens**는 최신 AI와 검색 기술을 결합하여 콘텐츠의 진실을 탐구합니다.")
 
 # --- 공통 함수 ---
+
+# [최적화] 비용 절감 및 속도를 위해 gpt-4o-mini 사용
 def get_llm(openai_key):
     return ChatOpenAI(temperature=0, openai_api_key=openai_key, model_name="gpt-4o-mini")
 
 def get_search_tool(tavily_key):
     return TavilySearchResults(tavily_api_key=tavily_key, k=3)
 
-# 🚀 [NEW] 구독하신 'YouTube Transcript 3' API 맞춤형 함수
+# 🛠️ [Helper] 유튜브 썸네일/제목 가져오기 (oEmbed)
+def get_youtube_metadata(url):
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+        response = requests.get(oembed_url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "title": data.get("title", "YouTube Video"),
+                "author": data.get("author_name", "Unknown Channel"),
+                "thumbnail": data.get("thumbnail_url", "https://img.youtube.com/vi/default/hqdefault.jpg"),
+                "url": url
+            }
+    except:
+        pass
+    return {"title": "분석된 유튜브 영상", "author": "YouTube", "thumbnail": "https://img.youtube.com/vi/default/hqdefault.jpg", "url": url}
+
+# 🚀 [Core] RapidAPI를 통한 자막 추출 (에러 처리 강화)
 def get_transcript_via_api(video_url, api_key):
-    # 1. API 엔드포인트 설정 (보내주신 코드 기반)
+    # API 엔드포인트 (YouTube Transcript 3)
     url = "https://youtube-transcript3.p.rapidapi.com/api/transcript-with-url"
     
-    # 2. 파라미터 설정 (flat_text=true 옵션 사용으로 텍스트만 깔끔하게 받음)
-    # 팁: 한국어 분석을 위해 lang='ko'를 우선 시도합니다.
-    querystring = {
-        "url": video_url,
-        "flat_text": "true",
-        "lang": "ko" 
-    }
+    querystring = {"url": video_url, "flat_text": "true", "lang": "ko"}
+    headers = {"x-rapidapi-key": api_key, "x-rapidapi-host": "youtube-transcript3.p.rapidapi.com"}
 
-    headers = {
-        "x-rapidapi-key": api_key,
-        "x-rapidapi-host": "youtube-transcript3.p.rapidapi.com"
-    }
-
-    # 3. API 호출
-    response = requests.get(url, headers=headers, params=querystring)
-    
-    # 4. 에러 처리 및 언어 Fallback (한국어 없으면 영어로 재시도)
-    if response.status_code != 200:
-        # 한국어가 없어서 에러가 났을 수도 있으니 영어로 재시도
-        querystring["lang"] = "en"
-        response = requests.get(url, headers=headers, params=querystring)
+    try:
+        # 1차 시도 (한국어)
+        response = requests.get(url, headers=headers, params=querystring, timeout=20)
         
+        # 한국어 실패 시 영어 재시도
         if response.status_code != 200:
-            raise Exception(f"API 호출 실패 ({response.status_code}): {response.text}")
+            querystring["lang"] = "en"
+            response = requests.get(url, headers=headers, params=querystring, timeout=20)
+            
+        if response.status_code != 200:
+            raise Exception(f"API 호출 실패 ({response.status_code})")
 
-    # 5. 데이터 파싱
-    data = response.json()
-    
-    # flat_text=true 옵션을 썼으므로, 보통 'transcript' 키에 통문장이 들어옵니다.
-    if "transcript" in data:
-        return data["transcript"][:15000] # 길이 제한
-    else:
-        # 만약 구조가 다르면 통째로 반환 (디버깅용)
-        return str(data)[:15000]
+        data = response.json()
+        
+        # 데이터 검증 (에러 메시지가 텍스트로 오지 않도록)
+        if "transcript" in data:
+            if len(data["transcript"]) < 50:
+                raise Exception("자막 내용이 너무 짧거나 없습니다.")
+            return data["transcript"][:15000] # 토큰 제한 고려
+        elif "message" in data:
+            raise Exception(f"API 에러: {data['message']}")
+        else:
+            return str(data)[:15000]
+
+    except Exception as e:
+        raise Exception(f"자막 추출 중 오류 발생: {e}")
 
 # ---------------------------------------------------------
-# 🧠 분석 로직 1: 유튜브 (RapidAPI 사용)
+# 🎨 [UX 1] 유튜브 분석 함수 (HTML/CSS 주입 방식)
 # ---------------------------------------------------------
-def analyze_youtube(url, llm, search, rapid_key):
-    
-    # 1. 자막 추출 (미들웨어 사용)
+def analyze_youtube(url, llm, search, api_key):
+    # 1. 메타데이터 & 자막 확보
+    meta = get_youtube_metadata(url)
     full_text = ""
-    with st.spinner("🚀 RapidAPI를 통해 자막을 가져오고 있습니다..."):
+    
+    with st.spinner("🎧 영상 데이터를 가져오는 중... (RapidAPI)"):
         try:
-            full_text = get_transcript_via_api(url, rapid_key)
+            full_text = get_transcript_via_api(url, api_key)
         except Exception as e:
-            st.error(f"❌ 자막 가져오기 실패: {e}")
-            st.warning("RapidAPI Key가 정확한지 확인해주세요.")
+            st.error(f"❌ 분석 중단: {e}")
             return
 
-    # 2. 분석 시작
-    with st.spinner("👁️ Veritas Lens가 내용을 분석 중입니다..."):
+    # 2. LLM 분석
+    with st.spinner("🧠 Veritas Lens가 영상을 심층 분석 중입니다..."):
         analysis_prompt = PromptTemplate.from_template("""
-        다음 텍스트를 분석해줘:
+        다음 유튜브 스크립트를 분석해서 구조화된 데이터를 만들어줘.
+        
+        [스크립트]
         {text}
         
-        [요청사항]
-        1. 핵심 주제를 3줄로 요약해줘.
-        2. 팩트체크가 필요한 구체적인 주장(Fact Claims) 3가지만 추출해줘.
+        [요청사항 - 절대적으로 아래 형식을 지킬 것]
+        1. 핵심요약: 영상의 핵심 내용을 3가지로 요약 (각 1문장)
+        2. 신뢰도점수: 0~100점 사이 숫자 (내용의 논리성, 근거 기반 판단)
+        3. 화자성향: 화자의 태도나 성향을 1문장으로 요약 (예: 친비트코인, 정부 비판적 등)
+        4. AI코멘트: 시청자가 주의해야 할 점이나 참고할 점 1문장
+        5. 팩트체크: 검증이 필요한 주장 3가지를 뽑고, 각각 [사실/거짓/의견] 중 하나로 판별하고 이유를 적어줘.
         
-        형식:
-        SUMMARY: ...
+        [출력 형식]
+        SUMMARY:
+        - 요약1
+        - 요약2
+        - 요약3
+        SCORE: 75
+        STANCE: 화자의 성향 요약
+        COMMENT: AI의 조언 및 코멘트
         CLAIMS:
-        - 주장1
-        - 주장2
-        - 주장3
+        - 주장1 | 사실/거짓/의견 | 판별 이유
+        - 주장2 | 사실/거짓/의견 | 판별 이유
+        - 주장3 | 사실/거짓/의견 | 판별 이유
         """)
         
-        analysis_result = llm.invoke(analysis_prompt.format(text=full_text)).content
+        try:
+            result = llm.invoke(analysis_prompt.format(text=full_text)).content
+        except Exception as e:
+            st.error(f"AI 분석 오류: {e}")
+            return
+
+        # 데이터 파싱
+        summary_list = []
+        score = 50
+        stance = "분석 불가"
+        comment = "정보 없음"
+        claims_data = []
+
+        current_section = None
+        for line in result.split('\n'):
+            line = line.strip()
+            if not line: continue
+            if "SUMMARY:" in line: current_section = "SUMMARY"; continue
+            if "SCORE:" in line: 
+                try: score = int(re.findall(r'\d+', line)[0])
+                except: score = 50; continue
+            if "STANCE:" in line: stance = line.replace("STANCE:", "").strip(); continue
+            if "COMMENT:" in line: comment = line.replace("COMMENT:", "").strip(); continue
+            if "CLAIMS:" in line: current_section = "CLAIMS"; continue
+            
+            if current_section == "SUMMARY" and line.startswith("-"):
+                summary_list.append(line.replace("-", "").strip())
+            if current_section == "CLAIMS" and line.startswith("-"):
+                parts = line.replace("-", "").strip().split("|")
+                if len(parts) >= 3:
+                    claims_data.append({"claim": parts[0].strip(), "type": parts[1].strip(), "reason": parts[2].strip()})
+
+        # HTML 생성
+        summary_html = "".join([f'<li class="flex items-start"><div class="bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs mr-3 mt-0.5 flex-shrink-0">{i}</div><span>{t}</span></li>' for i, t in enumerate(summary_list, 1)])
         
-        summary_text = ""
-        claims_list = []
-        
-        if "SUMMARY:" in analysis_result and "CLAIMS:" in analysis_result:
-            parts = analysis_result.split("CLAIMS:")
-            summary_text = parts[0].replace("SUMMARY:", "").strip()
-            claims_list = [c.strip("- ").strip() for c in parts[1].split("\n") if c.strip()]
-        else:
-            summary_text = analysis_result
+        claims_html = ""
+        for item in claims_data:
+            if "사실" in item['type'] or "True" in item['type']:
+                theme = ("text-green-500", "bg-green-50", "border-green-500", "text-green-800", "사실 (Fact)", "fa-check-circle")
+            elif "거짓" in item['type'] or "False" in item['type']:
+                theme = ("text-red-500", "bg-red-50", "border-red-500", "text-red-800", "거짓/오류 (False)", "fa-times-circle")
+            else:
+                theme = ("text-yellow-500", "bg-yellow-50", "border-yellow-500", "text-yellow-800", "의견/전망 (Opinion)", "fa-scale-balanced")
             
-        st.markdown(f"<div class='card'><h3>📺 영상 요약</h3>{summary_text}</div>", unsafe_allow_html=True)
-        
-        st.markdown("### 🕵️ 팩트체크 리포트")
-        for claim in claims_list:
-            if len(claim) < 5: continue
-            
-            try:
-                search_res = search.invoke(claim)
-                evidence = str(search_res)
-            except:
-                evidence = "검색 결과 없음"
-            
-            verify_prompt = PromptTemplate.from_template(
-                "주장: {claim}\n증거: {evidence}\n증거를 바탕으로 이 주장이 '사실', '거짓', '판단보류' 중 무엇인지 판단하고 이유를 1문장으로 써줘."
-            )
-            verdict = llm.invoke(verify_prompt.format(claim=claim, evidence=evidence)).content
-            
-            color_class = "fact-true" if "사실" in verdict else "fact-check"
-            st.markdown(f"<div class='fact-box {color_class}'><strong>🗣️ {claim}</strong><br>↳ {verdict}</div>", unsafe_allow_html=True)
+            claims_html += f"""
+            <div class="flex space-x-4">
+                <div class="mt-1"><i class="fa-solid {theme[5]} {theme[0]} text-xl"></i></div>
+                <div>
+                    <h4 class="font-bold text-gray-900 mb-1">"{item['claim']}"</h4>
+                    <p class="text-sm text-gray-700 {theme[1]} p-3 rounded-lg border-l-4 {theme[2]}">
+                        <strong class="{theme[3]}">{theme[4]}</strong><br>{item['reason']}
+                    </p>
+                </div>
+            </div>"""
+
+        score_theme = ("text-green-600", "border-green-400", "bg-green-50", "신뢰도 높음") if score >= 70 else \
+                      ("text-yellow-700", "border-yellow-400", "bg-yellow-50", "주의 필요") if score >= 40 else \
+                      ("text-red-600", "border-red-400", "bg-red-50", "신뢰도 낮음")
+
+        final_html = f"""
+        <!DOCTYPE html>
+        <html lang="ko">
+        <head>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+            <style>
+                @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+                body {{ font-family: 'Noto Sans KR', sans-serif; background-color: transparent; }}
+                .card {{ background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #f3f4f6; margin-bottom: 20px; }}
+            </style>
+        </head>
+        <body>
+            <div class="max-w-4xl mx-auto space-y-6">
+                <div class="card flex items-start space-x-4">
+                    <img src="{meta['thumbnail']}" class="w-32 h-auto rounded-xl shadow-sm">
+                    <div class="flex-1">
+                        <h2 class="text-xl font-bold text-gray-900 leading-tight mb-2">{meta['title']}</h2>
+                        <p class="text-sm text-gray-500 mb-2"><i class="fa-brands fa-youtube mr-1 text-red-600"></i> {meta['author']}</p>
+                        <a href="{meta['url']}" target="_blank" class="text-sm text-blue-600 hover:underline font-medium">영상 보러가기 <i class="fa-solid fa-external-link-alt text-xs ml-1"></i></a>
+                    </div>
+                </div>
+                <div class="card"><h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center"><i class="fa-solid fa-list-check mr-2 text-blue-600"></i> 핵심 3줄 요약</h3><ul class="space-y-3 text-gray-700">{summary_html}</ul></div>
+                <div class="card">
+                    <h3 class="text-lg font-bold text-gray-900 mb-6 flex items-center"><i class="fa-solid fa-chart-pie mr-2 text-blue-600"></i> 심층 분석</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div class="flex flex-col items-center justify-center p-4 bg-gray-50 rounded-xl">
+                            <p class="text-sm font-medium text-gray-500 mb-3">AI 신뢰도 점수</p>
+                            <div class="relative w-24 h-24 flex items-center justify-center rounded-full border-8 {score_theme[1]} {score_theme[2]} mb-2"><span class="text-3xl font-bold {score_theme[0]}">{score}</span></div>
+                            <p class="font-bold {score_theme[0]}">{score_theme[3]}</p>
+                        </div>
+                        <div class="flex flex-col justify-center">
+                             <div class="mb-4"><p class="text-sm font-medium text-gray-500 mb-1">🗣️ 화자 성향 분석</p><p class="text-gray-800 font-semibold text-lg">{stance}</p></div>
+                             <div class="bg-blue-50 p-4 rounded-lg border border-blue-100"><p class="text-xs font-bold text-blue-800 mb-1"><i class="fa-solid fa-robot"></i> AI Insight</p><p class="text-sm text-blue-900 leading-relaxed">{comment}</p></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card"><h3 class="text-lg font-bold text-gray-900 mb-6 flex items-center"><i class="fa-solid fa-magnifying-glass mr-2 text-blue-600"></i> 주요 주장 팩트체크</h3><div class="space-y-6">{claims_html}</div></div>
+            </div>
+        </body>
+        </html>
+        """
+        st.markdown(final_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 🧠 분석 로직 2: 웹 뉴스
+# 🎨 [UX 2] 뉴스 분석 함수 (HTML/CSS 주입 방식)
 # ---------------------------------------------------------
 def analyze_article(url, llm, search):
     try:
-        with st.spinner("📰 기사 본문을 읽어오는 중입니다..."):
+        with st.spinner("📰 기사 본문을 읽어오는 중..."):
             loader = WebBaseLoader(url)
             docs = loader.load()
-            article_content = docs[0].page_content[:10000]
-            article_title = docs[0].metadata.get('title', '제목 없음')
+            content = docs[0].page_content[:12000]
+            title = docs[0].metadata.get('title', '뉴스 기사 분석')
+            domain = url.split("//")[-1].split("/")[0].replace("www.", "")
     except Exception as e:
         st.error(f"기사를 읽어올 수 없습니다: {e}")
         return
 
     with st.spinner("⚖️ Veritas Lens가 기사의 이면을 파헤치고 있습니다..."):
-        # 1. LLM 분석
-        bias_prompt = PromptTemplate.from_template("""
-        기사 제목: {title}
-        기사 본문: {text}
-        
-        다음 3가지를 분석해줘:
-        1. 자극성 점수 (0~100점, 숫자만): 예) 85
-        2. 이 기사의 프레이밍(의도) 요약 (2문장 이내)
-        3. 검색해야 할 키워드 1개 (단어만)
-        
-        형식:
-        SCORE: 점수
-        FRAMING: 내용
-        KEYWORD: 단어
+        analysis_prompt = PromptTemplate.from_template("""
+        다음 뉴스 기사를 분석해서 구조화된 데이터를 만들어줘.
+        [기사 본문] {text}
+        [요청사항]
+        1. 핵심요약: 3가지 요약 (각 1문장)
+        2. 자극성점수: 0~100점 (높을수록 자극적/편향적)
+        3. 프레이밍: 기사의 의도나 프레임 1문장
+        4. AI코멘트: 놓친 맥락이나 주의점 1문장
+        5. 팩트체크: 주장 3가지 판별 [사실/거짓/의견]
+        [출력 형식]
+        SUMMARY:
+        - 요약1
+        - 요약2
+        - 요약3
+        SCORE: 85
+        FRAMING: 프레이밍 내용
+        COMMENT: 코멘트 내용
+        CLAIMS:
+        - 주장1 | 사실/거짓/의견 | 이유
+        - 주장2 | 사실/거짓/의견 | 이유
+        - 주장3 | 사실/거짓/의견 | 이유
         """)
         
         try:
-            bias_res = llm.invoke(bias_prompt.format(title=article_title, text=article_content)).content
+            result = llm.invoke(analysis_prompt.format(text=content)).content
         except Exception as e:
-            st.error(f"분석 중 오류 발생: {e}")
+            st.error(f"AI 분석 오류: {e}")
             return
+
+        # 데이터 파싱 (유튜브와 동일 로직)
+        summary_list = []
+        score = 50
+        framing = "분석 불가"
+        comment = "정보 없음"
+        claims_data = []
+        current_section = None
         
-        # 파싱 로직
-        score = 0
-        framing = "분석 실패"
-        keyword = article_title
-        
-        for line in bias_res.split('\n'):
+        for line in result.split('\n'):
+            line = line.strip()
+            if not line: continue
+            if "SUMMARY:" in line: current_section = "SUMMARY"; continue
             if "SCORE:" in line: 
-                try:
-                    score_str = line.split(":")[1].strip().replace("점", "")
-                    score = int(re.findall(r'\d+', score_str)[0])
-                except: score = 50
-            if "FRAMING:" in line: framing = line.split(":")[1].strip()
-            if "KEYWORD:" in line: keyword = line.split(":")[1].strip()
+                try: score = int(re.findall(r'\d+', line)[0])
+                except: score = 50; continue
+            if "FRAMING:" in line: framing = line.replace("FRAMING:", "").strip(); continue
+            if "COMMENT:" in line: comment = line.replace("COMMENT:", "").strip(); continue
+            if "CLAIMS:" in line: current_section = "CLAIMS"; continue
             
-        # 2. 외부 맥락 검색
-        search_res = search.invoke(keyword)
-        missing_context = llm.invoke(f"기사 내용: {article_content}\n외부 사실: {search_res}\n기사에서 누락된 중요한 맥락 1가지만 찾아서 핵심만 설명해줘.").content
+            if current_section == "SUMMARY" and line.startswith("-"): summary_list.append(line.replace("-", "").strip())
+            if current_section == "CLAIMS" and line.startswith("-"):
+                parts = line.replace("-", "").strip().split("|")
+                if len(parts) >= 3: claims_data.append({"claim": parts[0].strip(), "type": parts[1].strip(), "reason": parts[2].strip()})
 
-        # -----------------------------------------------------
-        # 🎨 UI 렌더링 (HTML/CSS Injection)
-        # -----------------------------------------------------
+        # HTML 생성
+        summary_html = "".join([f'<li class="flex items-start"><div class="bg-indigo-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs mr-3 mt-0.5 flex-shrink-0">{i}</div><span>{t}</span></li>' for i, t in enumerate(summary_list, 1)])
         
-        # 점수에 따른 색상 결정
-        if score >= 70:
-            score_color = "#ef4444" # Red
-            score_msg = "🔥 매우 자극적 (High Bias)"
-        elif score >= 40:
-            score_color = "#f97316" # Orange
-            score_msg = "⚠️ 주의 필요 (Moderate)"
-        else:
-            score_color = "#10b981" # Green
-            score_msg = "✅ 중립적 (Neutral)"
+        claims_html = ""
+        for item in claims_data:
+            if "사실" in item['type'] or "True" in item['type']: theme = ("text-green-500", "bg-green-50", "border-green-500", "text-green-800", "사실 (Fact)", "fa-check-circle")
+            elif "거짓" in item['type'] or "False" in item['type']: theme = ("text-red-500", "bg-red-50", "border-red-500", "text-red-800", "거짓/오류 (False)", "fa-times-circle")
+            else: theme = ("text-yellow-500", "bg-yellow-50", "border-yellow-500", "text-yellow-800", "의견/해석 (Opinion)", "fa-scale-balanced")
             
-        st.markdown(f"## 📰 {article_title}")
-        
-        # 레이아웃: 1:2 비율 (왼쪽: 스코어/요약, 오른쪽: 상세 분석)
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            # [카드 1] 자극성 지수 (게이지 바 스타일)
-            st.markdown(f"""
-                <div style="background-color: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; text-align: center;">
-                    <div style="font-size: 14px; color: #6b7280; margin-bottom: 5px;">자극성 지수 (Bias Score)</div>
-                    <div style="font-size: 48px; font-weight: 800; color: {score_color};">{score}</div>
-                    <div style="background-color: #e5e7eb; border-radius: 9999px; height: 10px; width: 100%; margin: 10px 0; overflow: hidden;">
-                        <div style="background-color: {score_color}; height: 100%; width: {score}%;"></div>
-                    </div>
-                    <div style="font-size: 14px; font-weight: bold; color: {score_color};">{score_msg}</div>
+            claims_html += f"""
+            <div class="flex space-x-4">
+                <div class="mt-1"><i class="fa-solid {theme[5]} {theme[0]} text-xl"></i></div>
+                <div>
+                    <h4 class="font-bold text-gray-900 mb-1">"{item['claim']}"</h4>
+                    <p class="text-sm text-gray-700 {theme[1]} p-3 rounded-lg border-l-4 {theme[2]}"><strong class="{theme[3]}">{theme[4]}</strong><br>{item['reason']}</p>
                 </div>
-            """, unsafe_allow_html=True)
-            
-            # [카드 2] 검색 키워드
-            st.markdown(f"""
-                <div style="background-color: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                    <div style="font-size: 14px; color: #6b7280; margin-bottom: 10px;">검증 키워드</div>
-                    <span style="background-color: #dbeafe; color: #1e40af; padding: 5px 12px; border-radius: 20px; font-weight: 600; font-size: 14px;">🔍 {keyword}</span>
-                </div>
-            """, unsafe_allow_html=True)
+            </div>"""
 
-        with col2:
-            # [카드 3] 프레이밍 분석
-            st.markdown(f"""
-                <div style="background-color: white; padding: 25px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px;">
-                    <h3 style="margin-top: 0; font-size: 18px; color: #111827;">🧐 이 기사의 프레이밍(의도)</h3>
-                    <p style="font-size: 16px; line-height: 1.6; color: #374151; margin-bottom: 0;">{framing}</p>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            # [카드 4] 놓친 맥락 (강조 스타일)
-            st.markdown(f"""
-                <div style="background-color: #fff7ed; border-left: 5px solid #f97316; padding: 25px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                    <h3 style="margin-top: 0; font-size: 18px; color: #9a3412;">🧩 놓친 맥락 (Missing Context)</h3>
-                    <p style="font-size: 15px; line-height: 1.6; color: #7c2d12; margin-bottom: 0;">{missing_context}</p>
-                    <div style="margin-top: 15px; font-size: 12px; color: #9a3412; opacity: 0.8;">
-                        * AI가 외부 검색 결과를 바탕으로 보완한 정보입니다.
+        score_theme = ("text-red-600", "border-red-400", "bg-red-50", "매우 자극적") if score >= 70 else \
+                      ("text-orange-600", "border-orange-400", "bg-orange-50", "다소 편향됨") if score >= 40 else \
+                      ("text-green-600", "border-green-400", "bg-green-50", "중립적/건조함")
+
+        final_html = f"""
+        <!DOCTYPE html>
+        <html lang="ko">
+        <head>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+            <style>
+                @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+                body {{ font-family: 'Noto Sans KR', sans-serif; background-color: transparent; }}
+                .card {{ background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #f3f4f6; margin-bottom: 20px; }}
+            </style>
+        </head>
+        <body>
+            <div class="max-w-4xl mx-auto space-y-6">
+                <div class="card flex items-start space-x-4">
+                    <div class="w-24 h-24 bg-gray-100 rounded-xl flex items-center justify-center text-4xl text-gray-400"><i class="fa-regular fa-newspaper"></i></div>
+                    <div class="flex-1">
+                        <h2 class="text-xl font-bold text-gray-900 leading-tight mb-2">{title}</h2>
+                        <p class="text-sm text-gray-500 mb-2"><i class="fa-solid fa-link mr-1 text-indigo-600"></i> {domain}</p>
+                        <a href="{url}" target="_blank" class="text-sm text-blue-600 hover:underline font-medium">원본 기사 읽기 <i class="fa-solid fa-external-link-alt text-xs ml-1"></i></a>
                     </div>
                 </div>
-            """, unsafe_allow_html=True)
+                <div class="card"><h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center"><i class="fa-solid fa-list-check mr-2 text-indigo-600"></i> 핵심 3줄 요약</h3><ul class="space-y-3 text-gray-700">{summary_html}</ul></div>
+                <div class="card">
+                    <h3 class="text-lg font-bold text-gray-900 mb-6 flex items-center"><i class="fa-solid fa-chart-line mr-2 text-indigo-600"></i> 편향성 & 프레이밍 분석</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div class="flex flex-col items-center justify-center p-4 bg-gray-50 rounded-xl">
+                            <p class="text-sm font-medium text-gray-500 mb-3">🔥 기사 자극성 지수</p>
+                            <div class="relative w-24 h-24 flex items-center justify-center rounded-full border-8 {score_theme[1]} {score_theme[2]} mb-2"><span class="text-3xl font-bold {score_theme[0]}">{score}</span></div>
+                            <p class="font-bold {score_theme[0]}">{score_theme[3]}</p>
+                        </div>
+                        <div class="flex flex-col justify-center">
+                             <div class="mb-4"><p class="text-sm font-medium text-gray-500 mb-1">🧐 프레이밍(의도) 분석</p><p class="text-gray-800 font-semibold text-lg">{framing}</p></div>
+                             <div class="bg-indigo-50 p-4 rounded-lg border border-indigo-100"><p class="text-xs font-bold text-indigo-800 mb-1"><i class="fa-solid fa-lightbulb"></i> Missing Context</p><p class="text-sm text-indigo-900 leading-relaxed">{comment}</p></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card"><h3 class="text-lg font-bold text-gray-900 mb-6 flex items-center"><i class="fa-solid fa-magnifying-glass mr-2 text-indigo-600"></i> 팩트체크 리포트</h3><div class="space-y-6">{claims_html}</div></div>
+            </div>
+        </body>
+        </html>
+        """
+        st.markdown(final_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 🚀 메인 실행부
@@ -281,29 +396,4 @@ def analyze_article(url, llm, search):
 st.markdown('<div class="main-title">Veritas Lens <span style="font-size:1.5rem; color:#3B82F6;">Beta</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">See the truth behind the noise. URL 하나로 팩트와 편향성을 꿰뚫어 보세요.</div>', unsafe_allow_html=True)
 
-url_input = st.text_input("🔗 분석하고 싶은 링크를 입력하세요 (YouTube or News URL)", placeholder="https://...")
-
-if st.button("Analyze Link 🚀"):
-    if not url_input:
-        st.warning("링크를 입력해주세요!")
-    elif not openai_api_key or not tavily_api_key:
-        st.error("기본 API Key(OpenAI, Tavily) 설정이 필요합니다.")
-    else:
-        llm_instance = get_llm(openai_api_key)
-        search_tool = get_search_tool(tavily_api_key)
-        
-        if "youtube.com" in url_input or "youtu.be" in url_input or "shorts" in url_input:
-            # RapidAPI 키 확인
-            if "RAPIDAPI_KEY" in st.secrets:
-                rapid_key = st.secrets["RAPIDAPI_KEY"]
-            else:
-                rapid_key = st.text_input("RapidAPI Key", type="password") # Secrets에 없으면 입력받음
-                
-            if rapid_key:
-                analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
-            else:
-                st.error("YouTube 분석을 위해 RapidAPI Key가 필요합니다.")
-        else:
-            analyze_article(url_input, llm_instance, search_tool)
-
-
+url_input = st.text_input("🔗 분석하고 싶은 링크를 입력하세요 (
