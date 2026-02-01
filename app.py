@@ -173,43 +173,107 @@ def analyze_article(url, llm, search):
         st.error(f"기사를 읽어올 수 없습니다: {e}")
         return
 
-    with st.spinner("⚖️ 기사의 편향성과 맥락을 분석 중입니다..."):
+    with st.spinner("⚖️ Veritas Lens가 기사의 이면을 파헤치고 있습니다..."):
+        # 1. LLM 분석
         bias_prompt = PromptTemplate.from_template("""
         기사 제목: {title}
         기사 본문: {text}
         
         다음 3가지를 분석해줘:
-        1. 자극성 점수 (0~100점)
-        2. 이 기사의 프레이밍(의도) 요약
-        3. 검색해야 할 키워드 1개
+        1. 자극성 점수 (0~100점, 숫자만): 예) 85
+        2. 이 기사의 프레이밍(의도) 요약 (2문장 이내)
+        3. 검색해야 할 키워드 1개 (단어만)
         
         형식:
-        SCORE: ...
-        FRAMING: ...
-        KEYWORD: ...
+        SCORE: 점수
+        FRAMING: 내용
+        KEYWORD: 단어
         """)
         
-        bias_res = llm.invoke(bias_prompt.format(title=article_title, text=article_content)).content
+        try:
+            bias_res = llm.invoke(bias_prompt.format(title=article_title, text=article_content)).content
+        except Exception as e:
+            st.error(f"분석 중 오류 발생: {e}")
+            return
         
-        score = "N/A"
+        # 파싱 로직
+        score = 0
         framing = "분석 실패"
         keyword = article_title
         
         for line in bias_res.split('\n'):
-            if "SCORE:" in line: score = line.split(":")[1].strip()
+            if "SCORE:" in line: 
+                try:
+                    score_str = line.split(":")[1].strip().replace("점", "")
+                    score = int(re.findall(r'\d+', score_str)[0])
+                except: score = 50
             if "FRAMING:" in line: framing = line.split(":")[1].strip()
             if "KEYWORD:" in line: keyword = line.split(":")[1].strip()
             
+        # 2. 외부 맥락 검색
         search_res = search.invoke(keyword)
-        missing_context = llm.invoke(f"기사 내용: {article_content}\n외부 사실: {search_res}\n기사에서 누락된 중요한 맥락 1가지만 찾아서 설명해줘.").content
+        missing_context = llm.invoke(f"기사 내용: {article_content}\n외부 사실: {search_res}\n기사에서 누락된 중요한 맥락 1가지만 찾아서 핵심만 설명해줘.").content
+
+        # -----------------------------------------------------
+        # 🎨 UI 렌더링 (HTML/CSS Injection)
+        # -----------------------------------------------------
         
-        st.markdown(f"<div class='card'><h3>📰 {article_title}</h3></div>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
+        # 점수에 따른 색상 결정
+        if score >= 70:
+            score_color = "#ef4444" # Red
+            score_msg = "🔥 매우 자극적 (High Bias)"
+        elif score >= 40:
+            score_color = "#f97316" # Orange
+            score_msg = "⚠️ 주의 필요 (Moderate)"
+        else:
+            score_color = "#10b981" # Green
+            score_msg = "✅ 중립적 (Neutral)"
+            
+        st.markdown(f"## 📰 {article_title}")
+        
+        # 레이아웃: 1:2 비율 (왼쪽: 스코어/요약, 오른쪽: 상세 분석)
+        col1, col2 = st.columns([1, 2])
+        
         with col1:
-             st.markdown(f"<div class='card'><div class='bias-gauge'>🔥 자극성 지수: {score}</div></div>", unsafe_allow_html=True)
+            # [카드 1] 자극성 지수 (게이지 바 스타일)
+            st.markdown(f"""
+                <div style="background-color: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; text-align: center;">
+                    <div style="font-size: 14px; color: #6b7280; margin-bottom: 5px;">자극성 지수 (Bias Score)</div>
+                    <div style="font-size: 48px; font-weight: 800; color: {score_color};">{score}</div>
+                    <div style="background-color: #e5e7eb; border-radius: 9999px; height: 10px; width: 100%; margin: 10px 0; overflow: hidden;">
+                        <div style="background-color: {score_color}; height: 100%; width: {score}%;"></div>
+                    </div>
+                    <div style="font-size: 14px; font-weight: bold; color: {score_color};">{score_msg}</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # [카드 2] 검색 키워드
+            st.markdown(f"""
+                <div style="background-color: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <div style="font-size: 14px; color: #6b7280; margin-bottom: 10px;">검증 키워드</div>
+                    <span style="background-color: #dbeafe; color: #1e40af; padding: 5px 12px; border-radius: 20px; font-weight: 600; font-size: 14px;">🔍 {keyword}</span>
+                </div>
+            """, unsafe_allow_html=True)
+
         with col2:
-             st.markdown(f"<div class='card'><strong>🔍 프레이밍:</strong><br>{framing}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='fact-box fact-check'><strong>🧩 놓친 맥락(Missing Context):</strong><br>{missing_context}</div>", unsafe_allow_html=True)
+            # [카드 3] 프레이밍 분석
+            st.markdown(f"""
+                <div style="background-color: white; padding: 25px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; font-size: 18px; color: #111827;">🧐 이 기사의 프레이밍(의도)</h3>
+                    <p style="font-size: 16px; line-height: 1.6; color: #374151; margin-bottom: 0;">{framing}</p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # [카드 4] 놓친 맥락 (강조 스타일)
+            st.markdown(f"""
+                <div style="background-color: #fff7ed; border-left: 5px solid #f97316; padding: 25px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <h3 style="margin-top: 0; font-size: 18px; color: #9a3412;">🧩 놓친 맥락 (Missing Context)</h3>
+                    <p style="font-size: 15px; line-height: 1.6; color: #7c2d12; margin-bottom: 0;">{missing_context}</p>
+                    <div style="margin-top: 15px; font-size: 12px; color: #9a3412; opacity: 0.8;">
+                        * AI가 외부 검색 결과를 바탕으로 보완한 정보입니다.
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 🚀 메인 실행부
@@ -241,4 +305,5 @@ if st.button("Analyze Link 🚀"):
                 st.error("YouTube 분석을 위해 RapidAPI Key가 필요합니다.")
         else:
             analyze_article(url_input, llm_instance, search_tool)
+
 
