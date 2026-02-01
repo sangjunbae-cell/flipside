@@ -1,10 +1,10 @@
 streamlit
+langchain
+langchain-core
 langchain-openai
 langchain-community
 tavily-python
-youtube-transcript-api
-yt-dlp
+requests
+beautifulsoup4
 openai
 tiktoken
-beautifulsoup4
-pydub
