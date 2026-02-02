@@ -106,30 +106,65 @@ def get_transcript_via_api(video_url, api_key):
     except Exception as e:
         raise Exception(f"자막 추출 중 오류 발생: {e}")
 
-# ---------------------------------------------------------
-# 🎨 [UX 1] 유튜브 분석 함수
-# ---------------------------------------------------------
-def analyze_youtube(url, llm, search, api_key):
-    meta = get_youtube_metadata(url)
-    full_text = ""
-    
-    with st.spinner("🎧 영상 데이터를 가져오는 중... (RapidAPI)"):
-        try:
-            full_text = get_transcript_via_api(url, api_key)
-        except Exception as e:
-            st.error(f"❌ 분석 중단: {e}")
-            return
+# ... (기존 코드: get_transcript_via_api 함수 끝) ...
+        else:
+            return str(data)[:15000]
 
-    with st.spinner("🧠 Veritas Lens가 영상을 심층 분석 중입니다..."):
-        analysis_prompt = PromptTemplate.from_template("""
-        다음 유튜브 스크립트를 분석해서 구조화된 데이터를 만들어줘.
-        [스크립트] {text}
-        [요청사항]
-        1. 핵심요약: 3가지 요약 (각 1문장)
-        2. 신뢰도점수: 0~100점
+    except Exception as e:
+        raise Exception(f"자막 추출 중 오류 발생: {e}")
+
+# =========================================================
+# 👇 [여기부터] 아래 코드를 복사해서 붙여넣으세요 (새로 추가되는 함수)
+# =========================================================
+
+def deep_analyze_with_search(text, llm, search_tool):
+    # 1단계: 검증할 핵심 키워드/주장 추출
+    with st.spinner("🕵️‍♀️ 1단계: 검증이 필요한 핵심 주장을 선별 중..."):
+        extraction_prompt = PromptTemplate.from_template("""
+        다음 텍스트에서 사실 검증이 필요한 핵심 주장이나 키워드 3가지를 추출해줘.
+        검색 엔진에 입력할 쿼리 형태로 만들어줘.
+        
+        [텍스트]
+        {text}
+        
+        [출력 형식]
+        - 검색쿼리1
+        - 검색쿼리2
+        - 검색쿼리3
+        """)
+        claims_result = llm.invoke(extraction_prompt.format(text=text[:10000])).content
+        queries = [line.replace("-", "").strip() for line in claims_result.split('\n') if line.strip().startswith("-")]
+
+    # 2단계: 웹 검색 수행 (Grounding)
+    search_context = ""
+    with st.spinner(f"🌐 2단계: 웹에서 팩트 확인 중... ({len(queries)}건)"):
+        for query in queries[:3]:
+            try:
+                search_results = search_tool.invoke(query)
+                evidence = "\n".join([f"- 출처({res['url']}): {res['content'][:200]}" for res in search_results])
+                search_context += f"\n[검색 키워드: {query}]\n{evidence}\n"
+            except Exception as e:
+                pass
+
+    # 3단계: 최종 종합 분석 (RAG)
+    with st.spinner("🧠 3단계: 증거를 바탕으로 심층 리포트 작성 중..."):
+        final_prompt = PromptTemplate.from_template("""
+        당신은 냉철한 미디어 비평가입니다. 
+        제공된 [원본 텍스트]와 [외부 검색 증거]를 비교 분석하여 보고서를 작성하세요.
+        
+        [원본 텍스트]
+        {text}
+        
+        [외부 검색 증거 (Fact Check Materials)]
+        {context}
+        
+        [필수 요청사항]
+        1. 핵심요약: 3가지 (각 1문장)
+        2. 신뢰도점수: 0~100점 (검색 증거와 일치하면 높게, 다르면 낮게)
         3. 화자성향: 1문장 요약
         4. AI코멘트: 1문장
         5. 팩트체크: 3가지 판별 [사실/거짓/의견]
+        
         [출력 형식]
         SUMMARY:
         - 요약1
@@ -144,12 +179,33 @@ def analyze_youtube(url, llm, search, api_key):
         - 주장3 | 사실/거짓/의견 | 이유
         """)
         
+        return llm.invoke(final_prompt.format(text=text[:10000], context=search_context)).content
+
+# =========================================================
+# 👆 [여기까지] 붙여넣기 끝
+# =========================================================
+
+# ---------------------------------------------------------
+# 🎨 [UX 1] 유튜브 분석 함수
+# ---------------------------------------------------------
+def analyze_youtube(url, llm, search, api_key):
+    meta = get_youtube_metadata(url)
+    full_text = ""
+    
+    with st.spinner("🎧 영상 데이터를 가져오는 중... (RapidAPI)"):
         try:
-            result = llm.invoke(analysis_prompt.format(text=full_text)).content
+            full_text = get_transcript_via_api(url, api_key)
         except Exception as e:
-            st.error(f"AI 분석 오류: {e}")
+            st.error(f"❌ 분석 중단: {e}")
             return
 
+# (삭제한 자리에 이걸 넣으세요)
+    try:
+        # 방금 위에서 만든 심층 분석 함수를 호출합니다.
+        result = deep_analyze_with_search(full_text, llm, search)
+    except Exception as e:
+        st.error(f"AI 분석 오류: {e}")
+        return
         # 파싱
         summary_list = []
         score = 50
@@ -329,4 +385,5 @@ if st.button("Analyze Link 🚀"):
                 analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
         else:
             analyze_article(url_input, llm_instance, search_tool)
+
 
