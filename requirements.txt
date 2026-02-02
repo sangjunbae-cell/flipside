@@ -1,10 +1,9 @@
 streamlit
 langchain
-langchain-core
-langchain-openai
 langchain-community
+langchain-openai
+openai
 tavily-python
 requests
 beautifulsoup4
-openai
 tiktoken
