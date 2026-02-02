@@ -1,5 +1,6 @@
 streamlit
 langchain
+langchain-core
 langchain-community
 langchain-openai
 openai
@@ -7,3 +8,4 @@ tavily-python
 requests
 beautifulsoup4
 tiktoken
+faiss-cpu
