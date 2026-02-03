@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import re
-import textwrap  # 👈 [필수 추가] 들여쓰기 제거용
+import textwrap
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -19,8 +19,9 @@ st.markdown("""
         background-color: #2563EB; color: white; border-radius: 8px; 
         padding: 0.5rem 1rem; font-weight: bold; border: none;
         width: 100%;
+        transition: all 0.2s;
     }
-    div.stButton > button:hover {background-color: #1D4ED8;}
+    div.stButton > button:hover {background-color: #1D4ED8; transform: scale(1.02);}
     </style>
 """, unsafe_allow_html=True)
 
@@ -48,6 +49,10 @@ with st.sidebar:
         rapid_api_key = st.text_input("RapidAPI Key", type="password")
         
     st.info("👁️ **Veritas Lens**는 최신 AI와 검색 기술을 결합하여 콘텐츠의 진실을 탐구합니다.")
+    
+    # [UX 개선] 입력 초기화 버튼 (Streamlit 방식)
+    if st.button("🔄 새로운 분석 시작하기"):
+        st.rerun()
 
 # --- 공통 함수 ---
 
@@ -57,6 +62,7 @@ def get_llm(openai_key):
 def get_search_tool(tavily_key):
     return TavilySearchResults(tavily_api_key=tavily_key, k=3)
 
+@st.cache_data(show_spinner=False)
 def get_youtube_metadata(url):
     try:
         oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
@@ -73,6 +79,7 @@ def get_youtube_metadata(url):
         pass
     return {"title": "분석된 유튜브 영상", "author": "YouTube", "thumbnail": "https://img.youtube.com/vi/default/hqdefault.jpg", "url": url}
 
+@st.cache_data(show_spinner=False)
 def get_transcript_via_api(video_url, api_key):
     url = "https://youtube-transcript3.p.rapidapi.com/api/transcript-with-url"
     querystring = {"url": video_url, "flat_text": "true", "lang": "ko"}
@@ -102,12 +109,19 @@ def get_transcript_via_api(video_url, api_key):
     except Exception as e:
         raise Exception(f"자막 추출 중 오류 발생: {e}")
 
-# --- RAG 심층 분석 파이프라인 ---
-def deep_analyze_with_search(text, llm, search_tool):
+# --- RAG 심층 분석 파이프라인 (캐싱 적용) ---
+@st.cache_data(show_spinner=False)
+def deep_analyze_with_search(text, _llm, _search_tool):
+    """
+    개선 사항:
+    1. 요약과 팩트체크 통합
+    2. 출처(Source) 명시 요구
+    """
+    
     # 1단계: 주장 추출
     with st.spinner("🕵️‍♀️ 1단계: 검증이 필요한 핵심 주장을 선별 중..."):
         extraction_prompt = PromptTemplate.from_template("""
-        다음 텍스트에서 사실 검증이 필요한 핵심 주장이나 키워드 3가지를 추출해줘.
+        다음 텍스트에서 사실 검증이 필요한 '가장 핵심적인 주장' 3가지를 추출해줘.
         검색 엔진에 입력할 쿼리 형태로 만들어줘.
         
         [텍스트]
@@ -118,7 +132,7 @@ def deep_analyze_with_search(text, llm, search_tool):
         - 검색쿼리2
         - 검색쿼리3
         """)
-        claims_result = llm.invoke(extraction_prompt.format(text=text[:10000])).content
+        claims_result = _llm.invoke(extraction_prompt.format(text=text[:10000])).content
         queries = [line.replace("-", "").strip() for line in claims_result.split('\n') if line.strip().startswith("-")]
 
     # 2단계: 웹 검색
@@ -126,353 +140,208 @@ def deep_analyze_with_search(text, llm, search_tool):
     with st.spinner(f"🌐 2단계: 웹에서 팩트 확인 중... ({len(queries)}건)"):
         for query in queries[:3]:
             try:
-                search_results = search_tool.invoke(query)
-                evidence = "\n".join([f"- 출처({res['url']}): {res['content'][:200]}" for res in search_results])
+                search_results = _search_tool.invoke(query)
+                # 검색 결과 요약 (URL 포함)
+                evidence = "\n".join([f"- 내용: {res['content'][:200]} (출처: {res['url']})" for res in search_results])
                 search_context += f"\n[검색 키워드: {query}]\n{evidence}\n"
             except Exception as e:
                 pass
 
-    # 3단계: 종합 분석
-    with st.spinner("🧠 3단계: 증거를 바탕으로 심층 리포트 작성 중..."):
+    # 3단계: 종합 분석 (프롬프트 대폭 수정)
+    with st.spinner("🧠 3단계: 근거 자료와 대조하여 통합 리포트 작성 중..."):
         final_prompt = PromptTemplate.from_template("""
-        당신은 냉철한 미디어 비평가입니다. 
-        제공된 [원본 텍스트]와 [외부 검색 증거]를 비교 분석하여 보고서를 작성하세요.
+        당신은 팩트와 논리를 최우선으로 하는 미디어 분석가입니다.
+        [원본 텍스트]와 [검색 증거]를 통합하여 분석 리포트를 작성하세요.
         
         [원본 텍스트]
         {text}
         
-        [외부 검색 증거 (Fact Check Materials)]
+        [검색 증거]
         {context}
         
-        [필수 요청사항]
-        1. 핵심요약: 3가지 (각 1문장)
-        2. 신뢰도점수: 0~100점 (검색 증거와 일치하면 높게, 다르면 낮게)
-        3. 화자성향: 1문장 요약
-        4. AI코멘트: 1문장
-        5. 팩트체크: 3가지 판별 [사실/거짓/의견]
+        [요청사항]
+        1. 핵심주장 분석: 원본의 핵심 주장 3가지를 뽑고, 각 주장에 대해 바로 검증 결과와 근거를 제시하세요.
+           - 출처(Source URL)는 반드시 [검색 증거]에 있는 URL 중 가장 신뢰할 수 있는 것을 하나 골라 적으세요.
+           - 근거가 없다면 "출처 없음"이라고 적으세요.
+        2. 신뢰도 점수: 0~100점
+        3. 화자 성향: 1문장 요약
+        4. AI 코멘트: 시청자를 위한 조언
         
-        [출력 형식]
-        SUMMARY:
-        - 요약1
-        - 요약2
-        - 요약3
+        [엄격한 출력 포맷]
         SCORE: 75
-        STANCE: 성향
-        COMMENT: 코멘트
-        CLAIMS:
-        - 주장1 | 사실/거짓/의견 | 이유
-        - 주장2 | 사실/거짓/의견 | 이유
-        - 주장3 | 사실/거짓/의견 | 이유
+        STANCE: (화자의 성향)
+        COMMENT: (AI 코멘트)
+        ANALYSIS:
+        - CLAIM: (핵심 주장 1 - 한 문장 요약)
+          VERDICT: [사실/거짓/의견/판단보류]
+          REASON: (검증 내용 및 이유)
+          SOURCE: (http://... 또는 없음)
+        - CLAIM: (핵심 주장 2)
+          VERDICT: [사실/거짓/의견/판단보류]
+          REASON: (이유)
+          SOURCE: (URL)
+        - CLAIM: (핵심 주장 3)
+          VERDICT: [사실/거짓/의견/판단보류]
+          REASON: (이유)
+          SOURCE: (URL)
         """)
         
-        return llm.invoke(final_prompt.format(text=text[:10000], context=search_context)).content
+        return _llm.invoke(final_prompt.format(text=text[:10000], context=search_context)).content
 
 # ---------------------------------------------------------
-# 🎨 [UX 1] 유튜브 분석 함수 (수정됨: dedent 적용)
+# 🎨 UI 렌더링 함수 (공통)
 # ---------------------------------------------------------
-def analyze_youtube(url, llm, search, api_key):
-    meta = get_youtube_metadata(url)
-    full_text = ""
+def render_report(meta, result):
+    # 파싱 로직 (새로운 포맷에 맞춤)
+    score = 50
+    stance = "분석 불가"
+    comment = "정보 없음"
+    analysis_data = []
+
+    current_item = {}
     
-    with st.spinner("🎧 영상 데이터를 가져오는 중... (RapidAPI)"):
-        try:
-            full_text = get_transcript_via_api(url, api_key)
-        except Exception as e:
-            st.error(f"❌ 영상 자막을 가져올 수 없습니다: {e}")
-            return
-
-    try:
-        result = deep_analyze_with_search(full_text, llm, search)
-    except Exception as e:
-        st.error(f"AI 분석 오류: {e}")
-        return
-
-    # 파싱
-    summary_list = []
-    score = 50
-    stance = "분석 불가"
-    comment = "정보 없음"
-    claims_data = []
-
-    current_section = None
-    for line in result.split('\n'):
+    lines = result.split('\n')
+    for line in lines:
         line = line.strip()
         if not line: continue
-        if "SUMMARY:" in line: current_section = "SUMMARY"; continue
-        if "SCORE:" in line: 
-            try: score = int(re.findall(r'\d+', line)[0])
-            except: score = 50; continue
-        if "STANCE:" in line: stance = line.replace("STANCE:", "").strip(); continue
-        if "COMMENT:" in line: comment = line.replace("COMMENT:", "").strip(); continue
-        if "CLAIMS:" in line: current_section = "CLAIMS"; continue
         
-        if current_section == "SUMMARY" and line.startswith("-"): 
-            summary_list.append(line.replace("-", "").strip())
-        if current_section == "CLAIMS" and line.startswith("-"):
-            parts = line.replace("-", "").strip().split("|")
-            if len(parts) >= 3: 
-                claims_data.append({
-                    "claim": parts[0].strip(), 
-                    "type": parts[1].strip(), 
-                    "reason": parts[2].strip()
-                })
+        if line.startswith("SCORE:"): 
+            try: score = int(re.findall(r'\d+', line)[0])
+            except: score = 50
+        elif line.startswith("STANCE:"): stance = line.replace("STANCE:", "").strip()
+        elif line.startswith("COMMENT:"): comment = line.replace("COMMENT:", "").strip()
+        elif line.startswith("- CLAIM:"):
+            if current_item: analysis_data.append(current_item)
+            current_item = {"claim": line.replace("- CLAIM:", "").strip()}
+        elif line.startswith("VERDICT:"): current_item["verdict"] = line.replace("VERDICT:", "").strip()
+        elif line.startswith("REASON:"): current_item["reason"] = line.replace("REASON:", "").strip()
+        elif line.startswith("SOURCE:"): current_item["source"] = line.replace("SOURCE:", "").strip()
+    
+    if current_item: analysis_data.append(current_item)
 
-    # 스타일 설정
+    # 점수 스타일
     if score >= 70:
-        score_msg, score_sub = "신뢰도 높음 (Trustworthy)", "팩트와 근거가 충분합니다."
-        gauge_bg, gauge_border, text_color = "bg-green-50", "border-green-500", "text-green-700"
+        score_theme = ("text-green-600", "border-green-400", "bg-green-50", "신뢰도 높음")
     elif score >= 40:
-        score_msg, score_sub = "주의 필요 (Caution)", "팩트와 주관적 견해가 섞여 있습니다."
-        gauge_bg, gauge_border, text_color = "bg-yellow-50", "border-yellow-400", "text-yellow-700"
+        score_theme = ("text-yellow-700", "border-yellow-400", "bg-yellow-50", "주의 필요")
     else:
-        score_msg, score_sub = "신뢰도 낮음 (Low Trust)", "검증되지 않은 주장이 많습니다."
-        gauge_bg, gauge_border, text_color = "bg-red-50", "border-red-500", "text-red-700"
+        score_theme = ("text-red-600", "border-red-400", "bg-red-50", "신뢰도 낮음")
 
-    # HTML 조각 생성 (textwrap.dedent로 들여쓰기 제거 중요!)
-    summary_html = ""
-    for i, item in enumerate(summary_list, 1):
-        summary_html += f"""
-        <li class="flex items-start">
-            <i class="fa-solid fa-{i} text-blue-100 bg-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs mr-3 mt-0.5"></i>
-            <span>{item}</span>
-        </li>"""
+    # 분석 카드 HTML 생성
+    analysis_html = ""
+    for idx, item in enumerate(analysis_data, 1):
+        # 뱃지 스타일
+        verdict = item.get('verdict', '판단보류')
+        if "사실" in verdict or "True" in verdict:
+            badge = '<span class="px-2 py-1 bg-green-100 text-green-800 text-xs font-bold rounded">✅ 사실 (Fact)</span>'
+            border_color = "border-green-200"
+        elif "거짓" in verdict or "False" in verdict:
+            badge = '<span class="px-2 py-1 bg-red-100 text-red-800 text-xs font-bold rounded">❌ 거짓/오류 (False)</span>'
+            border_color = "border-red-200"
+        elif "의견" in verdict or "Opinion" in verdict:
+            badge = '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-bold rounded">⚠️ 의견 (Opinion)</span>'
+            border_color = "border-yellow-200"
+        else:
+            badge = '<span class="px-2 py-1 bg-gray-100 text-gray-800 text-xs font-bold rounded">❓ 판단보류</span>'
+            border_color = "border-gray-200"
 
-    claims_html = ""
-    for item in claims_data:
-        if "사실" in item['type']: icon, bg_cls, lbl = "fa-check-circle text-green-500", "bg-green-50 border-green-500 text-green-800", "사실 (Fact)"
-        elif "거짓" in item['type']: icon, bg_cls, lbl = "fa-times-circle text-red-500", "bg-red-50 border-red-500 text-red-800", "거짓/오류 (False)"
-        else: icon, bg_cls, lbl = "fa-triangle-exclamation text-yellow-500", "bg-yellow-50 border-yellow-500 text-yellow-800", "의견/전망 (Opinion)"
-
-        claims_html += f"""
-        <div class="flex space-x-4">
-            <div class="mt-1"><i class="fa-solid {icon} text-xl"></i></div>
-            <div>
-                <h4 class="font-bold text-gray-900 mb-1">"{item['claim']}"</h4>
-                <p class="text-sm text-gray-700 {bg_cls} p-3 rounded-lg border-l-4">
-                    <strong>{lbl}</strong><br>{item['reason']}
-                </p>
+        # 출처 링크 처리
+        source_url = item.get('source', '없음')
+        source_html = ""
+        if source_url and "http" in source_url:
+            source_html = f"""
+            <div class="mt-3 pt-2 border-t border-dashed border-gray-200">
+                <a href="{source_url}" target="_blank" class="inline-flex items-center text-xs text-blue-600 hover:text-blue-800 transition-colors">
+                    <i class="fa-solid fa-link mr-1.5"></i> 검증 출처 보기 (Source)
+                </a>
             </div>
-        </div>"""
+            """
 
-    # --- HTML 조립 (textwrap.dedent 사용) ---
+        analysis_html += f"""
+        <div class="bg-white rounded-xl border {border_color} p-5 shadow-sm hover:shadow-md transition-shadow duration-300">
+            <div class="flex justify-between items-start mb-2">
+                <div class="flex items-center space-x-2">
+                    <span class="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">{idx}</span>
+                    <h4 class="font-bold text-gray-900 text-lg">{item.get('claim', '')}</h4>
+                </div>
+                <div class="flex-shrink-0 ml-2">{badge}</div>
+            </div>
+            <p class="text-gray-700 text-sm leading-relaxed pl-8 mb-1">{item.get('reason', '')}</p>
+            <div class="pl-8">
+                {source_html}
+            </div>
+        </div>
+        """
+
+    # 최종 HTML 조립
     final_html = textwrap.dedent(f"""
     <!DOCTYPE html>
     <html lang="ko">
     <head>
         <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
             body {{ font-family: 'Noto Sans KR', sans-serif; }}
-            .card {{ background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; margin-bottom: 1.5rem; }}
+            .glass-card {{ background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.2); }}
         </style>
     </head>
     <body class="bg-transparent text-gray-800">
-        <div class="max-w-3xl mx-auto py-4">
-            <div class="card flex items-start space-x-4">
-                <img src="{meta['thumbnail']}" class="w-24 h-24 rounded-xl object-cover shadow-sm">
-                <div>
-                    <h2 class="font-bold text-gray-900 leading-tight mb-1" style="font-size: 1.1rem;">{meta['title']}</h2>
-                    <p class="text-sm text-gray-500 mb-2"><i class="fa-brands fa-youtube mr-1 text-red-600"></i> {meta['author']}</p>
-                    <a href="{meta['url']}" target="_blank" class="text-sm text-blue-600 hover:underline inline-block">원본 영상 보기 <i class="fa-solid fa-external-link-alt text-xs ml-1"></i></a>
+        <div class="max-w-4xl mx-auto py-4 space-y-6">
+            
+            <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-start space-x-5">
+                <div class="flex-shrink-0">
+                    <img src="{meta['thumbnail']}" class="w-28 h-28 rounded-xl object-cover shadow-md">
                 </div>
-            </div>
-            <div class="card">
-                <h3 class="text-lg font-bold text-gray-900 mb-4"><i class="fa-solid fa-list-check mr-2 text-blue-600"></i> 핵심 3줄 요약</h3>
-                <ul class="space-y-3 text-gray-700 pl-1">{summary_html}</ul>
-            </div>
-            <div class="card">
-                <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-scale-balanced mr-2 text-blue-600"></i> 편향성 및 신뢰도 분석</h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div class="text-center md:text-left">
-                        <p class="text-sm font-medium text-gray-500 mb-2">AI 신뢰도 점수</p>
-                        <div class="flex items-center justify-center md:justify-start space-x-3">
-                            <div class="relative w-20 h-20 flex items-center justify-center rounded-full border-4 {gauge_border} {gauge_bg}">
-                                <span class="text-2xl font-bold {text_color}">{score}<small class="text-sm font-normal">/100</small></span>
-                            </div>
-                            <div class="text-left">
-                                <p class="font-bold text-gray-900">{score_msg}</p>
-                                <p class="text-xs text-gray-500">{score_sub}</p>
-                            </div>
-                        </div>
+                <div class="flex-1">
+                    <div class="flex items-center space-x-2 mb-1">
+                        <span class="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full font-medium">{meta['author']}</span>
                     </div>
-                    <div>
-                         <p class="text-sm font-medium text-gray-500 mb-3">화자 성향</p>
-                         <div class="flex justify-between text-xs text-gray-400 mb-1 px-1"><span>비판적</span><span>옹호적</span></div>
-                        <div class="relative h-4 bg-gray-200 rounded-full overflow-hidden">
-                            <div class="absolute top-0 left-0 h-full bg-gradient-to-r from-gray-300 to-blue-500" style="width: 60%;"></div>
-                        </div>
-                        <p class="text-right text-xs text-blue-600 font-medium mt-1">{stance}</p>
+                    <h2 class="text-xl font-bold text-gray-900 leading-tight mb-2">{meta['title']}</h2>
+                    <a href="{meta['url']}" target="_blank" class="inline-flex items-center text-sm text-blue-600 font-medium hover:underline">
+                        원본 콘텐츠 확인하기 <i class="fa-solid fa-arrow-up-right-from-square ml-1 text-xs"></i>
+                    </a>
+                </div>
+                <div class="flex flex-col items-center justify-center pl-4 border-l border-gray-100">
+                    <span class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">Trust Score</span>
+                    <div class="relative flex items-center justify-center">
+                        <svg class="w-20 h-20 transform -rotate-90">
+                            <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="text-gray-100" />
+                            <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="{score_theme[0]}" stroke-dasharray="{score * 2.26} 226" />
+                        </svg>
+                        <span class="absolute text-2xl font-bold {score_theme[0]}">{score}</span>
                     </div>
-                </div>
-                <div class="mt-8 p-4 bg-blue-50 rounded-xl border border-blue-100">
-                    <h4 class="font-bold text-sm text-blue-900 mb-2"><i class="fa-solid fa-circle-info mr-1"></i> AI의 분석 코멘트</h4>
-                    <p class="text-sm text-blue-800 leading-relaxed">{comment}</p>
+                    <span class="mt-1 text-xs font-bold {score_theme[0]}">{score_theme[3]}</span>
                 </div>
             </div>
-            <div class="card">
-                 <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-magnifying-glass mr-2 text-blue-600"></i> 주요 주장 팩트체크</h3>
-                 <div class="space-y-6">{claims_html}</div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="md:col-span-2 bg-blue-50 rounded-xl p-5 border border-blue-100 relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-4 opacity-10"><i class="fa-solid fa-robot text-6xl text-blue-900"></i></div>
+                    <h3 class="font-bold text-blue-900 mb-2 flex items-center"><i class="fa-solid fa-circle-info mr-2"></i> AI 분석 코멘트</h3>
+                    <p class="text-sm text-blue-800 leading-relaxed relative z-10">{comment}</p>
+                </div>
+                <div class="bg-gray-50 rounded-xl p-5 border border-gray-100">
+                    <h3 class="font-bold text-gray-700 mb-2 text-sm uppercase tracking-wide">화자/논조 성향</h3>
+                    <p class="text-gray-900 font-medium text-lg leading-tight">{stance}</p>
+                </div>
             </div>
-            <div class="text-center text-xs text-gray-400 pb-8">※ 본 리포트는 AI와 실시간 웹 검색(RAG)을 통해 자동 생성되었습니다.</div>
+
+            <div class="space-y-4">
+                <div class="flex items-center space-x-2 mb-2 px-1">
+                    <i class="fa-solid fa-magnifying-glass-chart text-blue-600 text-xl"></i>
+                    <h3 class="text-xl font-bold text-gray-900">핵심 주장 검증 리포트</h3>
+                </div>
+                {analysis_html}
+            </div>
+
+            <div class="text-center pt-8 pb-4">
+                <p class="text-xs text-gray-400">Powered by Veritas Lens AI • Tavily Search API</p>
+            </div>
         </div>
     </body>
-    </html>""")
-
-    st.markdown(final_html, unsafe_allow_html=True)
-
-# ---------------------------------------------------------
-# 🎨 [UX 2] 뉴스 분석 함수 (수정됨: dedent 적용)
-# ---------------------------------------------------------
-def analyze_article(url, llm, search):
-    try:
-        with st.spinner("📰 기사 본문을 읽어오는 중..."):
-            loader = WebBaseLoader(url)
-            docs = loader.load()
-            content = docs[0].page_content[:15000]
-            title = docs[0].metadata.get('title', '뉴스 기사 분석')
-            domain = url.split("//")[-1].split("/")[0].replace("www.", "")
-    except Exception as e:
-        st.error(f"기사를 읽어올 수 없습니다: {e}")
-        return
-
-    try:
-        result = deep_analyze_with_search(content, llm, search)
-    except Exception as e:
-        st.error(f"AI 분석 오류: {e}")
-        return
-
-    summary_list = []
-    score = 50
-    stance = "분석 불가"
-    comment = "정보 없음"
-    claims_data = []
-
-    current_section = None
-    for line in result.split('\n'):
-        line = line.strip()
-        if not line: continue
-        if "SUMMARY:" in line: current_section = "SUMMARY"; continue
-        if "SCORE:" in line: 
-            try: score = int(re.findall(r'\d+', line)[0])
-            except: score = 50; continue
-        if "STANCE:" in line: stance = line.replace("STANCE:", "").strip(); continue
-        if "COMMENT:" in line: comment = line.replace("COMMENT:", "").strip(); continue
-        if "CLAIMS:" in line: current_section = "CLAIMS"; continue
-        
-        if current_section == "SUMMARY" and line.startswith("-"): 
-            summary_list.append(line.replace("-", "").strip())
-        if current_section == "CLAIMS" and line.startswith("-"):
-            parts = line.replace("-", "").strip().split("|")
-            if len(parts) >= 3: 
-                claims_data.append({
-                    "claim": parts[0].strip(), 
-                    "type": parts[1].strip(), 
-                    "reason": parts[2].strip()
-                })
-
-    if score >= 70:
-        score_msg, score_sub = "신뢰도 높음 (Trustworthy)", "팩트와 근거가 충분합니다."
-        gauge_bg, gauge_border, text_color = "bg-green-50", "border-green-500", "text-green-700"
-    elif score >= 40:
-        score_msg, score_sub = "주의 필요 (Caution)", "팩트와 주관적 견해가 섞여 있습니다."
-        gauge_bg, gauge_border, text_color = "bg-yellow-50", "border-yellow-400", "text-yellow-700"
-    else:
-        score_msg, score_sub = "신뢰도 낮음 (Low Trust)", "검증되지 않은 주장이 많습니다."
-        gauge_bg, gauge_border, text_color = "bg-red-50", "border-red-500", "text-red-700"
-
-    summary_html = ""
-    for i, item in enumerate(summary_list, 1):
-        summary_html += f"""
-        <li class="flex items-start">
-            <i class="fa-solid fa-{i} text-indigo-100 bg-indigo-600 rounded-full w-5 h-5 flex items-center justify-center text-xs mr-3 mt-0.5"></i>
-            <span>{item}</span>
-        </li>"""
-
-    claims_html = ""
-    for item in claims_data:
-        if "사실" in item['type']: icon, bg_cls, lbl = "fa-check-circle text-green-500", "bg-green-50 border-green-500 text-green-800", "사실 (Fact)"
-        elif "거짓" in item['type']: icon, bg_cls, lbl = "fa-times-circle text-red-500", "bg-red-50 border-red-500 text-red-800", "거짓/오류 (False)"
-        else: icon, bg_cls, lbl = "fa-triangle-exclamation text-yellow-500", "bg-yellow-50 border-yellow-500 text-yellow-800", "의견/전망 (Opinion)"
-
-        claims_html += f"""
-        <div class="flex space-x-4">
-            <div class="mt-1"><i class="fa-solid {icon} text-xl"></i></div>
-            <div>
-                <h4 class="font-bold text-gray-900 mb-1">"{item['claim']}"</h4>
-                <p class="text-sm text-gray-700 {bg_cls} p-3 rounded-lg border-l-4">
-                    <strong>{lbl}</strong><br>{item['reason']}
-                </p>
-            </div>
-        </div>"""
-
-    # --- HTML 조립 (textwrap.dedent 사용) ---
-    final_html = textwrap.dedent(f"""
-    <!DOCTYPE html>
-    <html lang="ko">
-    <head>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-            body {{ font-family: 'Noto Sans KR', sans-serif; }}
-            .card {{ background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; margin-bottom: 1.5rem; }}
-        </style>
-    </head>
-    <body class="bg-transparent text-gray-800">
-        <div class="max-w-3xl mx-auto py-4">
-            <div class="card flex items-start space-x-4">
-                <div class="w-24 h-24 bg-gray-100 rounded-xl flex items-center justify-center text-4xl text-gray-400 flex-shrink-0">
-                    <i class="fa-regular fa-newspaper"></i>
-                </div>
-                <div>
-                    <h2 class="font-bold text-gray-900 leading-tight mb-1" style="font-size: 1.1rem;">{title}</h2>
-                    <p class="text-sm text-gray-500 mb-2"><i class="fa-solid fa-link mr-1 text-indigo-600"></i> {domain}</p>
-                    <a href="{url}" target="_blank" class="text-sm text-blue-600 hover:underline inline-block">원본 기사 읽기 <i class="fa-solid fa-external-link-alt text-xs ml-1"></i></a>
-                </div>
-            </div>
-            <div class="card">
-                <h3 class="text-lg font-bold text-gray-900 mb-4"><i class="fa-solid fa-list-check mr-2 text-indigo-600"></i> 핵심 3줄 요약</h3>
-                <ul class="space-y-3 text-gray-700 pl-1">{summary_html}</ul>
-            </div>
-            <div class="card">
-                <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-scale-balanced mr-2 text-indigo-600"></i> 편향성 및 신뢰도 분석</h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div class="text-center md:text-left">
-                        <p class="text-sm font-medium text-gray-500 mb-2">AI 신뢰도 점수</p>
-                        <div class="flex items-center justify-center md:justify-start space-x-3">
-                            <div class="relative w-20 h-20 flex items-center justify-center rounded-full border-4 {gauge_border} {gauge_bg}">
-                                <span class="text-2xl font-bold {text_color}">{score}<small class="text-sm font-normal">/100</small></span>
-                            </div>
-                            <div class="text-left">
-                                <p class="font-bold text-gray-900">{score_msg}</p>
-                                <p class="text-xs text-gray-500">{score_sub}</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div>
-                         <p class="text-sm font-medium text-gray-500 mb-3">기사 논조</p>
-                         <div class="flex justify-between text-xs text-gray-400 mb-1 px-1"><span>비판적</span><span>옹호적</span></div>
-                        <div class="relative h-4 bg-gray-200 rounded-full overflow-hidden">
-                            <div class="absolute top-0 left-0 h-full bg-gradient-to-r from-gray-300 to-indigo-500" style="width: 50%;"></div>
-                        </div>
-                        <p class="text-right text-xs text-indigo-600 font-medium mt-1">{stance}</p>
-                    </div>
-                </div>
-                <div class="mt-8 p-4 bg-indigo-50 rounded-xl border border-indigo-100">
-                    <h4 class="font-bold text-sm text-indigo-900 mb-2"><i class="fa-solid fa-circle-info mr-1"></i> AI의 분석 코멘트</h4>
-                    <p class="text-sm text-indigo-800 leading-relaxed">{comment}</p>
-                </div>
-            </div>
-            <div class="card">
-                 <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-magnifying-glass mr-2 text-indigo-600"></i> 주요 주장 팩트체크</h3>
-                 <div class="space-y-6">{claims_html}</div>
-            </div>
-            <div class="text-center text-xs text-gray-400 pb-8">※ 본 리포트는 AI와 실시간 웹 검색(RAG)을 통해 자동 생성되었습니다.</div>
-        </div>
-    </body>
-    </html>""")
-
+    </html>
+    """)
     st.markdown(final_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
@@ -481,17 +350,22 @@ def analyze_article(url, llm, search):
 st.markdown('<div class="main-title">Veritas Lens <span style="font-size:1.5rem; color:#3B82F6;">Beta</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">See the truth behind the noise. URL 하나로 팩트와 편향성을 꿰뚫어 보세요.</div>', unsafe_allow_html=True)
 
-url_input = st.text_input("🔗 분석하고 싶은 링크를 입력하세요", placeholder="YouTube 또는 뉴스 기사 URL")
+# [UX 개선] Form을 사용하여 엔터키 입력 지원 및 명시적 제출
+with st.form("analyze_form"):
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        url_input = st.text_input("URL 입력", placeholder="YouTube 또는 뉴스 기사 URL을 붙여넣으세요", label_visibility="collapsed")
+    with col2:
+        submit_btn = st.form_submit_button("Analyze 🚀")
 
-if st.button("Analyze Link 🚀"):
-    if not url_input:
-        st.warning("링크를 입력해주세요!")
-    elif not openai_api_key or not tavily_api_key:
-        st.error("기본 API Key(OpenAI, Tavily) 설정이 필요합니다 (사이드바 확인).")
+if submit_btn and url_input:
+    if not openai_api_key or not tavily_api_key:
+        st.error("⚠️ 사이드바에서 API Key를 먼저 설정해주세요.")
     else:
         llm_instance = get_llm(openai_api_key)
         search_tool = get_search_tool(tavily_api_key)
         
+        # URL 타입 감지
         if any(x in url_input for x in ["youtube.com", "youtu.be", "shorts"]):
             if "RAPIDAPI_KEY" in st.secrets:
                 rapid_key = st.secrets["RAPIDAPI_KEY"]
@@ -501,6 +375,26 @@ if st.button("Analyze Link 🚀"):
             if not rapid_key:
                 st.error("YouTube 분석을 위해 RapidAPI Key가 필요합니다.")
             else:
-                analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
+                meta = get_youtube_metadata(url_input)
+                with st.spinner("🎧 영상 데이터를 분석 중입니다..."):
+                    try:
+                        transcript = get_transcript_via_api(url_input, rapid_key)
+                        result = deep_analyze_with_search(transcript, llm_instance, search_tool)
+                        render_report(meta, result)
+                    except Exception as e:
+                        st.error(f"오류 발생: {e}")
         else:
-            analyze_article(url_input, llm_instance, search_tool)
+            # 뉴스 분석
+            try:
+                with st.spinner("📰 기사 내용을 분석 중입니다..."):
+                    loader = WebBaseLoader(url_input)
+                    docs = loader.load()
+                    content = docs[0].page_content[:15000]
+                    title = docs[0].metadata.get('title', '뉴스 기사')
+                    domain = url_input.split("//")[-1].split("/")[0].replace("www.", "")
+                    meta = {"title": title, "author": domain, "thumbnail": "https://cdn-icons-png.flaticon.com/512/2965/2965879.png", "url": url_input}
+                    
+                    result = deep_analyze_with_search(content, llm_instance, search_tool)
+                    render_report(meta, result)
+            except Exception as e:
+                st.error(f"오류 발생: {e}")
