@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import re
+import textwrap  # 👈 [필수 추가] 들여쓰기 제거용
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -51,13 +52,11 @@ with st.sidebar:
 # --- 공통 함수 ---
 
 def get_llm(openai_key):
-    # 가성비 모델 gpt-4o-mini 사용 (필요시 gpt-4o로 변경 가능)
     return ChatOpenAI(temperature=0, openai_api_key=openai_key, model_name="gpt-4o-mini")
 
 def get_search_tool(tavily_key):
     return TavilySearchResults(tavily_api_key=tavily_key, k=3)
 
-# 🛠️ [Helper] 유튜브 메타데이터 가져오기
 def get_youtube_metadata(url):
     try:
         oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
@@ -74,7 +73,6 @@ def get_youtube_metadata(url):
         pass
     return {"title": "분석된 유튜브 영상", "author": "YouTube", "thumbnail": "https://img.youtube.com/vi/default/hqdefault.jpg", "url": url}
 
-# 🚀 [Core] RapidAPI 자막 추출
 def get_transcript_via_api(video_url, api_key):
     url = "https://youtube-transcript3.p.rapidapi.com/api/transcript-with-url"
     querystring = {"url": video_url, "flat_text": "true", "lang": "ko"}
@@ -83,7 +81,6 @@ def get_transcript_via_api(video_url, api_key):
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=20)
         
-        # 한국어 실패 시 영어 재시도
         if response.status_code != 200:
             querystring["lang"] = "en"
             response = requests.get(url, headers=headers, params=querystring, timeout=20)
@@ -105,17 +102,9 @@ def get_transcript_via_api(video_url, api_key):
     except Exception as e:
         raise Exception(f"자막 추출 중 오류 발생: {e}")
 
-# ---------------------------------------------------------
-# 🔥 [NEW] RAG 심층 분석 파이프라인
-# ---------------------------------------------------------
+# --- RAG 심층 분석 파이프라인 ---
 def deep_analyze_with_search(text, llm, search_tool):
-    """
-    1. 텍스트에서 검증 필요한 주장 추출
-    2. Tavily로 웹 검색 수행
-    3. 주장과 검색 결과를 종합하여 팩트체크 리포트 생성
-    """
-    
-    # 1단계: 검증할 핵심 키워드/주장 추출
+    # 1단계: 주장 추출
     with st.spinner("🕵️‍♀️ 1단계: 검증이 필요한 핵심 주장을 선별 중..."):
         extraction_prompt = PromptTemplate.from_template("""
         다음 텍스트에서 사실 검증이 필요한 핵심 주장이나 키워드 3가지를 추출해줘.
@@ -132,19 +121,18 @@ def deep_analyze_with_search(text, llm, search_tool):
         claims_result = llm.invoke(extraction_prompt.format(text=text[:10000])).content
         queries = [line.replace("-", "").strip() for line in claims_result.split('\n') if line.strip().startswith("-")]
 
-    # 2단계: 웹 검색 수행 (Grounding)
+    # 2단계: 웹 검색
     search_context = ""
     with st.spinner(f"🌐 2단계: 웹에서 팩트 확인 중... ({len(queries)}건)"):
-        for query in queries[:3]: # 비용 절약을 위해 최대 3개만
+        for query in queries[:3]:
             try:
                 search_results = search_tool.invoke(query)
-                # 검색 결과 요약
                 evidence = "\n".join([f"- 출처({res['url']}): {res['content'][:200]}" for res in search_results])
                 search_context += f"\n[검색 키워드: {query}]\n{evidence}\n"
             except Exception as e:
                 pass
 
-    # 3단계: 최종 종합 분석 (RAG)
+    # 3단계: 종합 분석
     with st.spinner("🧠 3단계: 증거를 바탕으로 심층 리포트 작성 중..."):
         final_prompt = PromptTemplate.from_template("""
         당신은 냉철한 미디어 비평가입니다. 
@@ -159,9 +147,9 @@ def deep_analyze_with_search(text, llm, search_tool):
         [필수 요청사항]
         1. 핵심요약: 3가지 (각 1문장)
         2. 신뢰도점수: 0~100점 (검색 증거와 일치하면 높게, 다르면 낮게)
-        3. 화자성향: 1문장 요약 (원본이 팩트를 어떻게 왜곡하거나 강조하는지 분석)
-        4. AI코멘트: 이 콘텐츠를 받아들이는 시청자를 위한 조언
-        5. 팩트체크: 반드시 [외부 검색 증거]를 기반으로 판단할 것.
+        3. 화자성향: 1문장 요약
+        4. AI코멘트: 1문장
+        5. 팩트체크: 3가지 판별 [사실/거짓/의견]
         
         [출력 형식]
         SUMMARY:
@@ -180,7 +168,7 @@ def deep_analyze_with_search(text, llm, search_tool):
         return llm.invoke(final_prompt.format(text=text[:10000], context=search_context)).content
 
 # ---------------------------------------------------------
-# 🎨 [UX 1] 유튜브 분석 함수 (Updated)
+# 🎨 [UX 1] 유튜브 분석 함수 (수정됨: dedent 적용)
 # ---------------------------------------------------------
 def analyze_youtube(url, llm, search, api_key):
     meta = get_youtube_metadata(url)
@@ -193,14 +181,13 @@ def analyze_youtube(url, llm, search, api_key):
             st.error(f"❌ 영상 자막을 가져올 수 없습니다: {e}")
             return
 
-    # --- RAG 심층 분석 실행 ---
     try:
         result = deep_analyze_with_search(full_text, llm, search)
     except Exception as e:
         st.error(f"AI 분석 오류: {e}")
         return
 
-    # --- 데이터 파싱 (Parsing) ---
+    # 파싱
     summary_list = []
     score = 50
     stance = "분석 불가"
@@ -230,122 +217,75 @@ def analyze_youtube(url, llm, search, api_key):
                     "reason": parts[2].strip()
                 })
 
-    # --- 동적 디자인 로직 (Dynamic Styling) ---
-    
-    # 1. 점수에 따른 색상 테마 설정
+    # 스타일 설정
     if score >= 70:
-        score_color = "green"
-        score_msg = "신뢰도 높음 (Trustworthy)"
-        score_sub = "팩트와 근거가 충분합니다."
-        gauge_bg = "bg-green-50"
-        gauge_border = "border-green-500"
-        text_color = "text-green-700"
+        score_msg, score_sub = "신뢰도 높음 (Trustworthy)", "팩트와 근거가 충분합니다."
+        gauge_bg, gauge_border, text_color = "bg-green-50", "border-green-500", "text-green-700"
     elif score >= 40:
-        score_color = "yellow"
-        score_msg = "주의 필요 (Caution)"
-        score_sub = "팩트와 주관적 견해가 섞여 있습니다."
-        gauge_bg = "bg-yellow-50"
-        gauge_border = "border-yellow-400"
-        text_color = "text-yellow-700"
+        score_msg, score_sub = "주의 필요 (Caution)", "팩트와 주관적 견해가 섞여 있습니다."
+        gauge_bg, gauge_border, text_color = "bg-yellow-50", "border-yellow-400", "text-yellow-700"
     else:
-        score_color = "red"
-        score_msg = "신뢰도 낮음 (Low Trust)"
-        score_sub = "검증되지 않은 주장이 많습니다."
-        gauge_bg = "bg-red-50"
-        gauge_border = "border-red-500"
-        text_color = "text-red-700"
+        score_msg, score_sub = "신뢰도 낮음 (Low Trust)", "검증되지 않은 주장이 많습니다."
+        gauge_bg, gauge_border, text_color = "bg-red-50", "border-red-500", "text-red-700"
 
-    # 2. 요약 리스트 HTML 생성
+    # HTML 조각 생성 (textwrap.dedent로 들여쓰기 제거 중요!)
     summary_html = ""
     for i, item in enumerate(summary_list, 1):
         summary_html += f"""
         <li class="flex items-start">
             <i class="fa-solid fa-{i} text-blue-100 bg-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs mr-3 mt-0.5"></i>
             <span>{item}</span>
-        </li>
-        """
+        </li>"""
 
-    # 3. 팩트체크 리스트 HTML 생성
     claims_html = ""
     for item in claims_data:
-        claim_type = item['type']
-        
-        # 아이콘 및 스타일 매핑
-        if "사실" in claim_type or "True" in claim_type:
-            icon = "fa-check-circle text-green-500"
-            bg_class = "bg-green-50 border-green-500 text-green-800"
-            label = "사실 (Fact)"
-        elif "거짓" in claim_type or "False" in claim_type:
-            icon = "fa-times-circle text-red-500"
-            bg_class = "bg-red-50 border-red-500 text-red-800"
-            label = "거짓/오류 (False)"
-        else: # 의견, 전망, 판단보류
-            icon = "fa-triangle-exclamation text-yellow-500"
-            bg_class = "bg-yellow-50 border-yellow-500 text-yellow-800"
-            label = "의견/전망 (Opinion)"
+        if "사실" in item['type']: icon, bg_cls, lbl = "fa-check-circle text-green-500", "bg-green-50 border-green-500 text-green-800", "사실 (Fact)"
+        elif "거짓" in item['type']: icon, bg_cls, lbl = "fa-times-circle text-red-500", "bg-red-50 border-red-500 text-red-800", "거짓/오류 (False)"
+        else: icon, bg_cls, lbl = "fa-triangle-exclamation text-yellow-500", "bg-yellow-50 border-yellow-500 text-yellow-800", "의견/전망 (Opinion)"
 
         claims_html += f"""
         <div class="flex space-x-4">
             <div class="mt-1"><i class="fa-solid {icon} text-xl"></i></div>
             <div>
                 <h4 class="font-bold text-gray-900 mb-1">"{item['claim']}"</h4>
-                <p class="text-sm text-gray-700 {bg_class} p-3 rounded-lg border-l-4">
-                    <strong>{label}</strong><br>
-                    {item['reason']}
+                <p class="text-sm text-gray-700 {bg_cls} p-3 rounded-lg border-l-4">
+                    <strong>{lbl}</strong><br>{item['reason']}
                 </p>
             </div>
-        </div>
-        """
+        </div>"""
 
-    # --- 최종 HTML 조립 (User's Design) ---
-# 1. HTML 헤더 (Tailwind CSS 및 폰트 로딩)
-    html_header = """
+    # --- HTML 조립 (textwrap.dedent 사용) ---
+    final_html = textwrap.dedent(f"""
     <!DOCTYPE html>
     <html lang="ko">
     <head>
-        <meta charset="UTF-8">
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-            body { font-family: 'Noto Sans KR', sans-serif; }
-            .card { background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; margin-bottom: 1.5rem; }
+            body {{ font-family: 'Noto Sans KR', sans-serif; }}
+            .card {{ background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; margin-bottom: 1.5rem; }}
         </style>
     </head>
     <body class="bg-transparent text-gray-800">
         <div class="max-w-3xl mx-auto py-4">
-    """
-
-    # 2. HTML 푸터 (닫는 태그)
-    html_footer = """
-        </div>
-    </body>
-    </html>
-    """
-
-    # 3. 본문 조립 (f-string 사용 시 중괄호 주의)
-    body_content = f"""
             <div class="card flex items-start space-x-4">
-                <img src="{meta['thumbnail']}" alt="Thumbnail" class="w-24 h-24 rounded-xl object-cover shadow-sm">
+                <img src="{meta['thumbnail']}" class="w-24 h-24 rounded-xl object-cover shadow-sm">
                 <div>
                     <h2 class="font-bold text-gray-900 leading-tight mb-1" style="font-size: 1.1rem;">{meta['title']}</h2>
                     <p class="text-sm text-gray-500 mb-2"><i class="fa-brands fa-youtube mr-1 text-red-600"></i> {meta['author']}</p>
                     <a href="{meta['url']}" target="_blank" class="text-sm text-blue-600 hover:underline inline-block">원본 영상 보기 <i class="fa-solid fa-external-link-alt text-xs ml-1"></i></a>
                 </div>
             </div>
-
             <div class="card">
                 <h3 class="text-lg font-bold text-gray-900 mb-4"><i class="fa-solid fa-list-check mr-2 text-blue-600"></i> 핵심 3줄 요약</h3>
-                <ul class="space-y-3 text-gray-700 pl-1">
-                    {summary_html}
-                </ul>
+                <ul class="space-y-3 text-gray-700 pl-1">{summary_html}</ul>
             </div>
-
             <div class="card">
                 <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-scale-balanced mr-2 text-blue-600"></i> 편향성 및 신뢰도 분석</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div class="text-center md:text-left">
-                        <p class="text-sm font-medium text-gray-500 mb-2">AI 신뢰도 점수 (Trust Score)</p>
+                        <p class="text-sm font-medium text-gray-500 mb-2">AI 신뢰도 점수</p>
                         <div class="flex items-center justify-center md:justify-start space-x-3">
                             <div class="relative w-20 h-20 flex items-center justify-center rounded-full border-4 {gauge_border} {gauge_bg}">
                                 <span class="text-2xl font-bold {text_color}">{score}<small class="text-sm font-normal">/100</small></span>
@@ -357,11 +297,8 @@ def analyze_youtube(url, llm, search, api_key):
                         </div>
                     </div>
                     <div>
-                         <p class="text-sm font-medium text-gray-500 mb-3">화자 성향 (Speaker Stance)</p>
-                         <div class="flex justify-between text-xs text-gray-400 mb-1 px-1">
-                            <span>비판적/부정적</span>
-                            <span>옹호적/긍정적</span>
-                         </div>
+                         <p class="text-sm font-medium text-gray-500 mb-3">화자 성향</p>
+                         <div class="flex justify-between text-xs text-gray-400 mb-1 px-1"><span>비판적</span><span>옹호적</span></div>
                         <div class="relative h-4 bg-gray-200 rounded-full overflow-hidden">
                             <div class="absolute top-0 left-0 h-full bg-gradient-to-r from-gray-300 to-blue-500" style="width: 60%;"></div>
                         </div>
@@ -370,55 +307,41 @@ def analyze_youtube(url, llm, search, api_key):
                 </div>
                 <div class="mt-8 p-4 bg-blue-50 rounded-xl border border-blue-100">
                     <h4 class="font-bold text-sm text-blue-900 mb-2"><i class="fa-solid fa-circle-info mr-1"></i> AI의 분석 코멘트</h4>
-                    <p class="text-sm text-blue-800 leading-relaxed">
-                        {comment}
-                    </p>
+                    <p class="text-sm text-blue-800 leading-relaxed">{comment}</p>
                 </div>
             </div>
-
             <div class="card">
                  <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-magnifying-glass mr-2 text-blue-600"></i> 주요 주장 팩트체크</h3>
-                 <div class="space-y-6">
-                    {claims_html}
-                 </div>
+                 <div class="space-y-6">{claims_html}</div>
             </div>
+            <div class="text-center text-xs text-gray-400 pb-8">※ 본 리포트는 AI와 실시간 웹 검색(RAG)을 통해 자동 생성되었습니다.</div>
+        </div>
+    </body>
+    </html>""")
 
-            <div class="text-center text-xs text-gray-400 pb-8">
-                ※ 본 리포트는 AI와 실시간 웹 검색(RAG)을 통해 자동 생성되었습니다.
-            </div>
-    """
-
-    # 4. 최종 결합 및 렌더링 (핵심!)
-    final_html = html_header + body_content + html_footer
-    
-    # ⚠️ 중요: 여기서 unsafe_allow_html=True가 없으면 코드가 텍스트로 뜹니다!
     st.markdown(final_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 🎨 [UX 2] 뉴스 분석 함수 (기존 유지)
+# 🎨 [UX 2] 뉴스 분석 함수 (수정됨: dedent 적용)
 # ---------------------------------------------------------
 def analyze_article(url, llm, search):
-    # 1. 기사 본문 로딩
     try:
         with st.spinner("📰 기사 본문을 읽어오는 중..."):
             loader = WebBaseLoader(url)
             docs = loader.load()
             content = docs[0].page_content[:15000]
             title = docs[0].metadata.get('title', '뉴스 기사 분석')
-            # 도메인 추출 (예: naver.com, nytimes.com)
             domain = url.split("//")[-1].split("/")[0].replace("www.", "")
     except Exception as e:
         st.error(f"기사를 읽어올 수 없습니다: {e}")
         return
 
-    # 2. RAG 심층 분석 실행 (유튜브와 동일한 로직 사용)
     try:
         result = deep_analyze_with_search(content, llm, search)
     except Exception as e:
         st.error(f"AI 분석 오류: {e}")
         return
 
-    # 3. 데이터 파싱 (유튜브와 동일한 포맷)
     summary_list = []
     score = 50
     stance = "분석 불가"
@@ -448,62 +371,43 @@ def analyze_article(url, llm, search):
                     "reason": parts[2].strip()
                 })
 
-    # 4. 동적 디자인 로직 (Dynamic Styling)
     if score >= 70:
-        score_msg = "신뢰도 높음 (Trustworthy)"
-        score_sub = "팩트와 근거가 충분합니다."
-        gauge_bg = "bg-green-50"
-        gauge_border = "border-green-500"
-        text_color = "text-green-700"
+        score_msg, score_sub = "신뢰도 높음 (Trustworthy)", "팩트와 근거가 충분합니다."
+        gauge_bg, gauge_border, text_color = "bg-green-50", "border-green-500", "text-green-700"
     elif score >= 40:
-        score_msg = "주의 필요 (Caution)"
-        score_sub = "팩트와 주관적 견해가 섞여 있습니다."
-        gauge_bg = "bg-yellow-50"
-        gauge_border = "border-yellow-400"
-        text_color = "text-yellow-700"
+        score_msg, score_sub = "주의 필요 (Caution)", "팩트와 주관적 견해가 섞여 있습니다."
+        gauge_bg, gauge_border, text_color = "bg-yellow-50", "border-yellow-400", "text-yellow-700"
     else:
-        score_msg = "신뢰도 낮음 (Low Trust)"
-        score_sub = "검증되지 않은 주장이 많습니다."
-        gauge_bg = "bg-red-50"
-        gauge_border = "border-red-500"
-        text_color = "text-red-700"
+        score_msg, score_sub = "신뢰도 낮음 (Low Trust)", "검증되지 않은 주장이 많습니다."
+        gauge_bg, gauge_border, text_color = "bg-red-50", "border-red-500", "text-red-700"
 
-    # 요약 리스트 HTML
     summary_html = ""
     for i, item in enumerate(summary_list, 1):
         summary_html += f"""
         <li class="flex items-start">
             <i class="fa-solid fa-{i} text-indigo-100 bg-indigo-600 rounded-full w-5 h-5 flex items-center justify-center text-xs mr-3 mt-0.5"></i>
             <span>{item}</span>
-        </li>
-        """
+        </li>"""
 
-    # 팩트체크 리스트 HTML
     claims_html = ""
     for item in claims_data:
-        claim_type = item['type']
-        if "사실" in claim_type or "True" in claim_type:
-            icon, bg_class, label = "fa-check-circle text-green-500", "bg-green-50 border-green-500 text-green-800", "사실 (Fact)"
-        elif "거짓" in claim_type or "False" in claim_type:
-            icon, bg_class, label = "fa-times-circle text-red-500", "bg-red-50 border-red-500 text-red-800", "거짓/오류 (False)"
-        else:
-            icon, bg_class, label = "fa-triangle-exclamation text-yellow-500", "bg-yellow-50 border-yellow-500 text-yellow-800", "의견/전망 (Opinion)"
+        if "사실" in item['type']: icon, bg_cls, lbl = "fa-check-circle text-green-500", "bg-green-50 border-green-500 text-green-800", "사실 (Fact)"
+        elif "거짓" in item['type']: icon, bg_cls, lbl = "fa-times-circle text-red-500", "bg-red-50 border-red-500 text-red-800", "거짓/오류 (False)"
+        else: icon, bg_cls, lbl = "fa-triangle-exclamation text-yellow-500", "bg-yellow-50 border-yellow-500 text-yellow-800", "의견/전망 (Opinion)"
 
         claims_html += f"""
         <div class="flex space-x-4">
             <div class="mt-1"><i class="fa-solid {icon} text-xl"></i></div>
             <div>
                 <h4 class="font-bold text-gray-900 mb-1">"{item['claim']}"</h4>
-                <p class="text-sm text-gray-700 {bg_class} p-3 rounded-lg border-l-4">
-                    <strong>{label}</strong><br>
-                    {item['reason']}
+                <p class="text-sm text-gray-700 {bg_cls} p-3 rounded-lg border-l-4">
+                    <strong>{lbl}</strong><br>{item['reason']}
                 </p>
             </div>
-        </div>
-        """
+        </div>"""
 
-    # --- 최종 HTML 조립 (디자인 통일) ---
-    final_html = f"""
+    # --- HTML 조립 (textwrap.dedent 사용) ---
+    final_html = textwrap.dedent(f"""
     <!DOCTYPE html>
     <html lang="ko">
     <head>
@@ -527,14 +431,10 @@ def analyze_article(url, llm, search):
                     <a href="{url}" target="_blank" class="text-sm text-blue-600 hover:underline inline-block">원본 기사 읽기 <i class="fa-solid fa-external-link-alt text-xs ml-1"></i></a>
                 </div>
             </div>
-
             <div class="card">
                 <h3 class="text-lg font-bold text-gray-900 mb-4"><i class="fa-solid fa-list-check mr-2 text-indigo-600"></i> 핵심 3줄 요약</h3>
-                <ul class="space-y-3 text-gray-700 pl-1">
-                    {summary_html}
-                </ul>
+                <ul class="space-y-3 text-gray-700 pl-1">{summary_html}</ul>
             </div>
-
             <div class="card">
                 <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-scale-balanced mr-2 text-indigo-600"></i> 편향성 및 신뢰도 분석</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -551,11 +451,8 @@ def analyze_article(url, llm, search):
                         </div>
                     </div>
                     <div>
-                         <p class="text-sm font-medium text-gray-500 mb-3">기사 논조 (Tone)</p>
-                         <div class="flex justify-between text-xs text-gray-400 mb-1 px-1">
-                            <span>비판적</span>
-                            <span>옹호적</span>
-                         </div>
+                         <p class="text-sm font-medium text-gray-500 mb-3">기사 논조</p>
+                         <div class="flex justify-between text-xs text-gray-400 mb-1 px-1"><span>비판적</span><span>옹호적</span></div>
                         <div class="relative h-4 bg-gray-200 rounded-full overflow-hidden">
                             <div class="absolute top-0 left-0 h-full bg-gradient-to-r from-gray-300 to-indigo-500" style="width: 50%;"></div>
                         </div>
@@ -564,27 +461,18 @@ def analyze_article(url, llm, search):
                 </div>
                 <div class="mt-8 p-4 bg-indigo-50 rounded-xl border border-indigo-100">
                     <h4 class="font-bold text-sm text-indigo-900 mb-2"><i class="fa-solid fa-circle-info mr-1"></i> AI의 분석 코멘트</h4>
-                    <p class="text-sm text-indigo-800 leading-relaxed">
-                        {comment}
-                    </p>
+                    <p class="text-sm text-indigo-800 leading-relaxed">{comment}</p>
                 </div>
             </div>
-
             <div class="card">
                  <h3 class="text-lg font-bold text-gray-900 mb-6"><i class="fa-solid fa-magnifying-glass mr-2 text-indigo-600"></i> 주요 주장 팩트체크</h3>
-                 <div class="space-y-6">
-                    {claims_html}
-                 </div>
+                 <div class="space-y-6">{claims_html}</div>
             </div>
-
-            <div class="text-center text-xs text-gray-400 pb-8">
-                ※ 본 리포트는 AI와 실시간 웹 검색(RAG)을 통해 자동 생성되었습니다.
-            </div>
+            <div class="text-center text-xs text-gray-400 pb-8">※ 본 리포트는 AI와 실시간 웹 검색(RAG)을 통해 자동 생성되었습니다.</div>
         </div>
     </body>
-    </html>
-    """
-    
+    </html>""")
+
     st.markdown(final_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
@@ -593,7 +481,6 @@ def analyze_article(url, llm, search):
 st.markdown('<div class="main-title">Veritas Lens <span style="font-size:1.5rem; color:#3B82F6;">Beta</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">See the truth behind the noise. URL 하나로 팩트와 편향성을 꿰뚫어 보세요.</div>', unsafe_allow_html=True)
 
-# [수정됨] 에러 방지를 위해 단순화된 텍스트 입력창
 url_input = st.text_input("🔗 분석하고 싶은 링크를 입력하세요", placeholder="YouTube 또는 뉴스 기사 URL")
 
 if st.button("Analyze Link 🚀"):
@@ -617,6 +504,3 @@ if st.button("Analyze Link 🚀"):
                 analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
         else:
             analyze_article(url_input, llm_instance, search_tool)
-
-
-
