@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import re
-import textwrap
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -10,9 +9,10 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 # --- 페이지 설정 ---
 st.set_page_config(page_title="Veritas Lens", page_icon="👁️", layout="wide")
 
-# --- CSS 커스텀 (들여쓰기 제거를 위해 dedent 적용) ---
-st.markdown(textwrap.dedent("""
-    <style>
+# --- CSS 커스텀 (변수 충돌 방지를 위해 일반 문자열 사용) ---
+# f-string을 쓰지 않고 일반 문자열로 정의하여 중괄호({}) 충돌을 방지합니다.
+custom_css = """
+<style>
     .main-title {font-size: 3rem; font-weight: 800; color: #111827; letter-spacing: -0.05rem;}
     .sub-title {font-size: 1.2rem; color: #6B7280; margin-bottom: 2rem;}
     div.stButton > button {
@@ -22,8 +22,9 @@ st.markdown(textwrap.dedent("""
         transition: all 0.2s;
     }
     div.stButton > button:hover {background-color: #1D4ED8; transform: scale(1.02);}
-    </style>
-"""), unsafe_allow_html=True)
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
 
 # --- 사이드바: API 설정 ---
 with st.sidebar:
@@ -175,10 +176,10 @@ def deep_analyze_with_search(text, _llm, _search_tool):
         return _llm.invoke(final_prompt.format(text=text[:10000], context=search_context)).content
 
 # ---------------------------------------------------------
-# 🎨 UI 렌더링 함수 (수정됨: dedent 및 문자열 처리 강화)
+# 🎨 UI 렌더링 함수 (완전 수정: Indentation-Safe 방식)
 # ---------------------------------------------------------
 def render_report(meta, result):
-    # 파싱 로직
+    # 파싱
     score = 50
     stance = "분석 불가"
     comment = "정보 없음"
@@ -204,99 +205,127 @@ def render_report(meta, result):
     
     if current_item: analysis_data.append(current_item)
 
-    # 스타일 설정
+    # 스타일 변수
     if score >= 70:
-        score_theme = ("text-green-600", "border-green-400", "bg-green-50", "신뢰도 높음")
+        score_class = "text-green-600"
+        score_msg = "신뢰도 높음"
+        stroke_dash = f"{score * 2.26} 226" # SVG 게이지 계산
     elif score >= 40:
-        score_theme = ("text-yellow-700", "border-yellow-400", "bg-yellow-50", "주의 필요")
+        score_class = "text-yellow-600"
+        score_msg = "주의 필요"
+        stroke_dash = f"{score * 2.26} 226"
     else:
-        score_theme = ("text-red-600", "border-red-400", "bg-red-50", "신뢰도 낮음")
+        score_class = "text-red-600"
+        score_msg = "신뢰도 낮음"
+        stroke_dash = f"{score * 2.26} 226"
 
-    # 분석 카드 HTML 조립 (리스트 컴프리헨션으로 공백 제거)
-    cards_html = []
+    # [중요] HTML 문자열 생성 시 들여쓰기 문제를 피하기 위해 리스트로 만들고 합칩니다.
+    # 또한 f-string 내의 줄바꿈을 모두 제거하여 한 줄로 만듭니다.
+    
+    html_parts = []
+    
+    # 1. CDN 로드
+    html_parts.append('<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">')
+    html_parts.append('<div style="font-family: \'Noto Sans KR\', sans-serif; max-width: 56rem; margin: 0 auto; padding-top: 1rem;">')
+
+    # 2. 헤더 카드
+    html_parts.append(f'''
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-start space-x-5 mb-6">
+        <div class="flex-shrink-0">
+            <img src="{meta['thumbnail']}" class="w-28 h-28 rounded-xl object-cover shadow-md">
+        </div>
+        <div class="flex-1">
+            <div class="flex items-center space-x-2 mb-1">
+                <span class="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full font-medium">{meta['author']}</span>
+            </div>
+            <h2 class="text-xl font-bold text-gray-900 leading-tight mb-2">{meta['title']}</h2>
+            <a href="{meta['url']}" target="_blank" class="inline-flex items-center text-sm text-blue-600 font-medium hover:underline">
+                원본 콘텐츠 확인하기 <i class="fa-solid fa-arrow-up-right-from-square ml-1 text-xs"></i>
+            </a>
+        </div>
+        <div class="flex flex-col items-center justify-center pl-4 border-l border-gray-100">
+            <span class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">Trust Score</span>
+            <div class="relative flex items-center justify-center">
+                <svg class="w-20 h-20 transform -rotate-90">
+                    <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="text-gray-100" />
+                    <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="{score_class}" stroke-dasharray="{stroke_dash}" />
+                </svg>
+                <span class="absolute text-2xl font-bold {score_class}">{score}</span>
+            </div>
+            <span class="mt-1 text-xs font-bold {score_class}">{score_msg}</span>
+        </div>
+    </div>
+    ''')
+
+    # 3. AI 코멘트 & 성향
+    html_parts.append(f'''
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div class="md:col-span-2 bg-blue-50 rounded-xl p-5 border border-blue-100 relative overflow-hidden">
+            <div class="absolute top-0 right-0 p-4 opacity-10"><i class="fa-solid fa-robot text-6xl text-blue-900"></i></div>
+            <h3 class="font-bold text-blue-900 mb-2 flex items-center"><i class="fa-solid fa-circle-info mr-2"></i> AI 분석 코멘트</h3>
+            <p class="text-sm text-blue-800 leading-relaxed relative z-10">{comment}</p>
+        </div>
+        <div class="bg-gray-50 rounded-xl p-5 border border-gray-100">
+            <h3 class="font-bold text-gray-700 mb-2 text-sm uppercase tracking-wide">화자/논조 성향</h3>
+            <p class="text-gray-900 font-medium text-lg leading-tight">{stance}</p>
+        </div>
+    </div>
+    ''')
+
+    # 4. 분석 리포트 헤더
+    html_parts.append('''
+    <div class="space-y-4">
+        <div class="flex items-center space-x-2 mb-2 px-1">
+            <i class="fa-solid fa-magnifying-glass-chart text-blue-600 text-xl"></i>
+            <h3 class="text-xl font-bold text-gray-900">핵심 주장 검증 리포트</h3>
+        </div>
+    ''')
+
+    # 5. 주장 카드 루프
     for idx, item in enumerate(analysis_data, 1):
         verdict = item.get('verdict', '판단보류')
         if "사실" in verdict or "True" in verdict:
             badge = '<span class="px-2 py-1 bg-green-100 text-green-800 text-xs font-bold rounded">✅ 사실 (Fact)</span>'
-            border_color = "border-green-200"
+            border_col = "border-green-200"
         elif "거짓" in verdict or "False" in verdict:
             badge = '<span class="px-2 py-1 bg-red-100 text-red-800 text-xs font-bold rounded">❌ 거짓/오류 (False)</span>'
-            border_color = "border-red-200"
+            border_col = "border-red-200"
         elif "의견" in verdict or "Opinion" in verdict:
             badge = '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-bold rounded">⚠️ 의견 (Opinion)</span>'
-            border_color = "border-yellow-200"
+            border_col = "border-yellow-200"
         else:
             badge = '<span class="px-2 py-1 bg-gray-100 text-gray-800 text-xs font-bold rounded">❓ 판단보류</span>'
-            border_color = "border-gray-200"
+            border_col = "border-gray-200"
 
-        source_url = item.get('source', '없음')
         source_html = ""
-        if source_url and "http" in source_url:
-            source_html = f"""<div class="mt-3 pt-2 border-t border-dashed border-gray-200"><a href="{source_url}" target="_blank" class="inline-flex items-center text-xs text-blue-600 hover:text-blue-800 transition-colors"><i class="fa-solid fa-link mr-1.5"></i> 검증 출처 보기 (Source)</a></div>"""
+        src_link = item.get('source', '')
+        if src_link and "http" in src_link:
+            source_html = f'<div class="mt-3 pt-2 border-t border-dashed border-gray-200"><a href="{src_link}" target="_blank" class="inline-flex items-center text-xs text-blue-600 hover:text-blue-800 transition-colors"><i class="fa-solid fa-link mr-1.5"></i> 검증 출처 보기</a></div>'
 
-        # 카드 HTML 한 줄로 만들기 (들여쓰기 이슈 방지)
-        card = f"""<div class="bg-white rounded-xl border {border_color} p-5 shadow-sm hover:shadow-md transition-shadow duration-300"><div class="flex justify-between items-start mb-2"><div class="flex items-center space-x-2"><span class="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">{idx}</span><h4 class="font-bold text-gray-900 text-lg">{item.get('claim', '')}</h4></div><div class="flex-shrink-0 ml-2">{badge}</div></div><p class="text-gray-700 text-sm leading-relaxed pl-8 mb-1">{item.get('reason', '')}</p><div class="pl-8">{source_html}</div></div>"""
-        cards_html.append(card)
-
-    analysis_section = "".join(cards_html)
-
-    # ⚠️ 중요: HTML 문자열 생성 시 textwrap.dedent를 사용하여
-    # 맨 앞의 불필요한 공백을 완전히 제거합니다.
-    final_html = textwrap.dedent(f"""
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <div style="font-family: 'Noto Sans KR', sans-serif; max-width: 56rem; margin: 0 auto; padding-top: 1rem;">
-        
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-start space-x-5 mb-6">
-            <div class="flex-shrink-0">
-                <img src="{meta['thumbnail']}" class="w-28 h-28 rounded-xl object-cover shadow-md">
-            </div>
-            <div class="flex-1">
-                <div class="flex items-center space-x-2 mb-1">
-                    <span class="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full font-medium">{meta['author']}</span>
+        # 카드를 한 줄로 압축하여 추가
+        card_html = f'''
+        <div class="bg-white rounded-xl border {border_col} p-5 shadow-sm hover:shadow-md transition-shadow duration-300">
+            <div class="flex justify-between items-start mb-2">
+                <div class="flex items-center space-x-2">
+                    <span class="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">{idx}</span>
+                    <h4 class="font-bold text-gray-900 text-lg">{item.get('claim', '')}</h4>
                 </div>
-                <h2 class="text-xl font-bold text-gray-900 leading-tight mb-2">{meta['title']}</h2>
-                <a href="{meta['url']}" target="_blank" class="inline-flex items-center text-sm text-blue-600 font-medium hover:underline">
-                    원본 콘텐츠 확인하기 <i class="fa-solid fa-arrow-up-right-from-square ml-1 text-xs"></i>
-                </a>
+                <div class="flex-shrink-0 ml-2">{badge}</div>
             </div>
-            <div class="flex flex-col items-center justify-center pl-4 border-l border-gray-100">
-                <span class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">Trust Score</span>
-                <div class="relative flex items-center justify-center">
-                    <svg class="w-20 h-20 transform -rotate-90">
-                        <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="text-gray-100" />
-                        <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="{score_theme[0]}" stroke-dasharray="{score * 2.26} 226" />
-                    </svg>
-                    <span class="absolute text-2xl font-bold {score_theme[0]}">{score}</span>
-                </div>
-                <span class="mt-1 text-xs font-bold {score_theme[0]}">{score_theme[3]}</span>
-            </div>
+            <p class="text-gray-700 text-sm leading-relaxed pl-8 mb-1">{item.get('reason', '')}</p>
+            <div class="pl-8">{source_html}</div>
         </div>
+        '''
+        html_parts.append(card_html)
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-            <div class="md:col-span-2 bg-blue-50 rounded-xl p-5 border border-blue-100 relative overflow-hidden">
-                <div class="absolute top-0 right-0 p-4 opacity-10"><i class="fa-solid fa-robot text-6xl text-blue-900"></i></div>
-                <h3 class="font-bold text-blue-900 mb-2 flex items-center"><i class="fa-solid fa-circle-info mr-2"></i> AI 분석 코멘트</h3>
-                <p class="text-sm text-blue-800 leading-relaxed relative z-10">{comment}</p>
-            </div>
-            <div class="bg-gray-50 rounded-xl p-5 border border-gray-100">
-                <h3 class="font-bold text-gray-700 mb-2 text-sm uppercase tracking-wide">화자/논조 성향</h3>
-                <p class="text-gray-900 font-medium text-lg leading-tight">{stance}</p>
-            </div>
-        </div>
+    # 닫는 태그
+    html_parts.append('</div>') # space-y-4 div 닫기
+    html_parts.append('<div class="text-center pt-8 pb-4"><p class="text-xs text-gray-400">Powered by Veritas Lens AI • Tavily Search API</p></div>')
+    html_parts.append('</div>') # main wrapper 닫기
 
-        <div class="space-y-4">
-            <div class="flex items-center space-x-2 mb-2 px-1">
-                <i class="fa-solid fa-magnifying-glass-chart text-blue-600 text-xl"></i>
-                <h3 class="text-xl font-bold text-gray-900">핵심 주장 검증 리포트</h3>
-            </div>
-            {analysis_section}
-        </div>
-
-        <div class="text-center pt-8 pb-4">
-            <p class="text-xs text-gray-400">Powered by Veritas Lens AI • Tavily Search API</p>
-        </div>
-    </div>
-    """)
+    # [핵심 수정] 모든 HTML 조각을 합친 후, 줄바꿈을 공백으로 치환하고 양옆 공백 제거
+    # 이렇게 하면 Streamlit이 "코드 블록"으로 오해할 여지가 0%가 됩니다.
+    final_html = "".join(html_parts).replace("\n", " ").strip()
     
     st.markdown(final_html, unsafe_allow_html=True)
 
@@ -306,7 +335,6 @@ def render_report(meta, result):
 st.markdown('<div class="main-title">Veritas Lens <span style="font-size:1.5rem; color:#3B82F6;">Beta</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">See the truth behind the noise. URL 하나로 팩트와 편향성을 꿰뚫어 보세요.</div>', unsafe_allow_html=True)
 
-# Form을 사용하여 엔터키 입력 지원 및 명시적 제출
 with st.form("analyze_form"):
     col1, col2 = st.columns([4, 1])
     with col1:
@@ -340,7 +368,6 @@ if submit_btn and url_input:
                     except Exception as e:
                         st.error(f"오류 발생: {e}")
         else:
-            # 뉴스 분석
             try:
                 with st.spinner("📰 기사 내용을 분석 중입니다..."):
                     loader = WebBaseLoader(url_input)
