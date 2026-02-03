@@ -298,20 +298,33 @@ def analyze_youtube(url, llm, search, api_key):
         """
 
     # --- 최종 HTML 조립 (User's Design) ---
-    final_html = f"""
+# 1. HTML 헤더 (Tailwind CSS 및 폰트 로딩)
+    html_header = """
     <!DOCTYPE html>
     <html lang="ko">
     <head>
+        <meta charset="UTF-8">
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-            body {{ font-family: 'Noto Sans KR', sans-serif; }}
-            .card {{ background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; margin-bottom: 1.5rem; }}
+            body { font-family: 'Noto Sans KR', sans-serif; }
+            .card { background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03); border: 1px solid #f3f4f6; margin-bottom: 1.5rem; }
         </style>
     </head>
     <body class="bg-transparent text-gray-800">
         <div class="max-w-3xl mx-auto py-4">
+    """
+
+    # 2. HTML 푸터 (닫는 태그)
+    html_footer = """
+        </div>
+    </body>
+    </html>
+    """
+
+    # 3. 본문 조립 (f-string 사용 시 중괄호 주의)
+    body_content = f"""
             <div class="card flex items-start space-x-4">
                 <img src="{meta['thumbnail']}" alt="Thumbnail" class="w-24 h-24 rounded-xl object-cover shadow-sm">
                 <div>
@@ -373,11 +386,12 @@ def analyze_youtube(url, llm, search, api_key):
             <div class="text-center text-xs text-gray-400 pb-8">
                 ※ 본 리포트는 AI와 실시간 웹 검색(RAG)을 통해 자동 생성되었습니다.
             </div>
-        </div>
-    </body>
-    </html>
     """
+
+    # 4. 최종 결합 및 렌더링 (핵심!)
+    final_html = html_header + body_content + html_footer
     
+    # ⚠️ 중요: 여기서 unsafe_allow_html=True가 없으면 코드가 텍스트로 뜹니다!
     st.markdown(final_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
@@ -603,5 +617,6 @@ if st.button("Analyze Link 🚀"):
                 analyze_youtube(url_input, llm_instance, search_tool, rapid_key)
         else:
             analyze_article(url_input, llm_instance, search_tool)
+
 
 
