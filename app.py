@@ -192,7 +192,7 @@ def deep_analyze_with_search(text, _llm, _search_tool):
 # 🎨 UI 렌더링 함수 (공통)
 # ---------------------------------------------------------
 def render_report(meta, result):
-    # 파싱 로직 (새로운 포맷에 맞춤)
+    # 파싱 로직
     score = 50
     stance = "분석 불가"
     comment = "정보 없음"
@@ -227,10 +227,9 @@ def render_report(meta, result):
     else:
         score_theme = ("text-red-600", "border-red-400", "bg-red-50", "신뢰도 낮음")
 
-    # 분석 카드 HTML 생성
-    analysis_html = ""
+    # 분석 카드 HTML 생성 (리스트 컴프리헨션 사용으로 들여쓰기 문제 최소화)
+    cards_html_list = []
     for idx, item in enumerate(analysis_data, 1):
-        # 뱃지 스타일
         verdict = item.get('verdict', '판단보류')
         if "사실" in verdict or "True" in verdict:
             badge = '<span class="px-2 py-1 bg-green-100 text-green-800 text-xs font-bold rounded">✅ 사실 (Fact)</span>'
@@ -245,103 +244,75 @@ def render_report(meta, result):
             badge = '<span class="px-2 py-1 bg-gray-100 text-gray-800 text-xs font-bold rounded">❓ 판단보류</span>'
             border_color = "border-gray-200"
 
-        # 출처 링크 처리
         source_url = item.get('source', '없음')
         source_html = ""
         if source_url and "http" in source_url:
-            source_html = f"""
-            <div class="mt-3 pt-2 border-t border-dashed border-gray-200">
-                <a href="{source_url}" target="_blank" class="inline-flex items-center text-xs text-blue-600 hover:text-blue-800 transition-colors">
-                    <i class="fa-solid fa-link mr-1.5"></i> 검증 출처 보기 (Source)
+            source_html = f"""<div class="mt-3 pt-2 border-t border-dashed border-gray-200"><a href="{source_url}" target="_blank" class="inline-flex items-center text-xs text-blue-600 hover:text-blue-800 transition-colors"><i class="fa-solid fa-link mr-1.5"></i> 검증 출처 보기 (Source)</a></div>"""
+
+        # 각 카드 HTML을 한 줄로 압축 (들여쓰기 이슈 방지)
+        card = f"""<div class="bg-white rounded-xl border {border_color} p-5 shadow-sm hover:shadow-md transition-shadow duration-300"><div class="flex justify-between items-start mb-2"><div class="flex items-center space-x-2"><span class="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">{idx}</span><h4 class="font-bold text-gray-900 text-lg">{item.get('claim', '')}</h4></div><div class="flex-shrink-0 ml-2">{badge}</div></div><p class="text-gray-700 text-sm leading-relaxed pl-8 mb-1">{item.get('reason', '')}</p><div class="pl-8">{source_html}</div></div>"""
+        cards_html_list.append(card)
+
+    analysis_html = "".join(cards_html_list)
+
+    # 최종 HTML 조립 (textwrap 사용 안함 - 직접 문자열 결합)
+    # head/body 태그 제거하고 div만 남김 (Streamlit은 iframe이 아니므로 head/body가 중복되면 꼬일 수 있음)
+    final_html = f"""
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <div style="font-family: 'Noto Sans KR', sans-serif; max-width: 56rem; margin: 0 auto; padding-top: 1rem;">
+        
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-start space-x-5 mb-6">
+            <div class="flex-shrink-0">
+                <img src="{meta['thumbnail']}" class="w-28 h-28 rounded-xl object-cover shadow-md">
+            </div>
+            <div class="flex-1">
+                <div class="flex items-center space-x-2 mb-1">
+                    <span class="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full font-medium">{meta['author']}</span>
+                </div>
+                <h2 class="text-xl font-bold text-gray-900 leading-tight mb-2">{meta['title']}</h2>
+                <a href="{meta['url']}" target="_blank" class="inline-flex items-center text-sm text-blue-600 font-medium hover:underline">
+                    원본 콘텐츠 확인하기 <i class="fa-solid fa-arrow-up-right-from-square ml-1 text-xs"></i>
                 </a>
             </div>
-            """
-
-        analysis_html += f"""
-        <div class="bg-white rounded-xl border {border_color} p-5 shadow-sm hover:shadow-md transition-shadow duration-300">
-            <div class="flex justify-between items-start mb-2">
-                <div class="flex items-center space-x-2">
-                    <span class="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">{idx}</span>
-                    <h4 class="font-bold text-gray-900 text-lg">{item.get('claim', '')}</h4>
+            <div class="flex flex-col items-center justify-center pl-4 border-l border-gray-100">
+                <span class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">Trust Score</span>
+                <div class="relative flex items-center justify-center">
+                    <svg class="w-20 h-20 transform -rotate-90">
+                        <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="text-gray-100" />
+                        <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="{score_theme[0]}" stroke-dasharray="{score * 2.26} 226" />
+                    </svg>
+                    <span class="absolute text-2xl font-bold {score_theme[0]}">{score}</span>
                 </div>
-                <div class="flex-shrink-0 ml-2">{badge}</div>
-            </div>
-            <p class="text-gray-700 text-sm leading-relaxed pl-8 mb-1">{item.get('reason', '')}</p>
-            <div class="pl-8">
-                {source_html}
+                <span class="mt-1 text-xs font-bold {score_theme[0]}">{score_theme[3]}</span>
             </div>
         </div>
-        """
 
-    # 최종 HTML 조립
-    final_html = textwrap.dedent(f"""
-    <!DOCTYPE html>
-    <html lang="ko">
-    <head>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-            body {{ font-family: 'Noto Sans KR', sans-serif; }}
-            .glass-card {{ background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.2); }}
-        </style>
-    </head>
-    <body class="bg-transparent text-gray-800">
-        <div class="max-w-4xl mx-auto py-4 space-y-6">
-            
-            <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex items-start space-x-5">
-                <div class="flex-shrink-0">
-                    <img src="{meta['thumbnail']}" class="w-28 h-28 rounded-xl object-cover shadow-md">
-                </div>
-                <div class="flex-1">
-                    <div class="flex items-center space-x-2 mb-1">
-                        <span class="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full font-medium">{meta['author']}</span>
-                    </div>
-                    <h2 class="text-xl font-bold text-gray-900 leading-tight mb-2">{meta['title']}</h2>
-                    <a href="{meta['url']}" target="_blank" class="inline-flex items-center text-sm text-blue-600 font-medium hover:underline">
-                        원본 콘텐츠 확인하기 <i class="fa-solid fa-arrow-up-right-from-square ml-1 text-xs"></i>
-                    </a>
-                </div>
-                <div class="flex flex-col items-center justify-center pl-4 border-l border-gray-100">
-                    <span class="text-xs text-gray-400 font-medium uppercase tracking-wider mb-1">Trust Score</span>
-                    <div class="relative flex items-center justify-center">
-                        <svg class="w-20 h-20 transform -rotate-90">
-                            <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="text-gray-100" />
-                            <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="8" fill="transparent" class="{score_theme[0]}" stroke-dasharray="{score * 2.26} 226" />
-                        </svg>
-                        <span class="absolute text-2xl font-bold {score_theme[0]}">{score}</span>
-                    </div>
-                    <span class="mt-1 text-xs font-bold {score_theme[0]}">{score_theme[3]}</span>
-                </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div class="md:col-span-2 bg-blue-50 rounded-xl p-5 border border-blue-100 relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-4 opacity-10"><i class="fa-solid fa-robot text-6xl text-blue-900"></i></div>
+                <h3 class="font-bold text-blue-900 mb-2 flex items-center"><i class="fa-solid fa-circle-info mr-2"></i> AI 분석 코멘트</h3>
+                <p class="text-sm text-blue-800 leading-relaxed relative z-10">{comment}</p>
             </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div class="md:col-span-2 bg-blue-50 rounded-xl p-5 border border-blue-100 relative overflow-hidden">
-                    <div class="absolute top-0 right-0 p-4 opacity-10"><i class="fa-solid fa-robot text-6xl text-blue-900"></i></div>
-                    <h3 class="font-bold text-blue-900 mb-2 flex items-center"><i class="fa-solid fa-circle-info mr-2"></i> AI 분석 코멘트</h3>
-                    <p class="text-sm text-blue-800 leading-relaxed relative z-10">{comment}</p>
-                </div>
-                <div class="bg-gray-50 rounded-xl p-5 border border-gray-100">
-                    <h3 class="font-bold text-gray-700 mb-2 text-sm uppercase tracking-wide">화자/논조 성향</h3>
-                    <p class="text-gray-900 font-medium text-lg leading-tight">{stance}</p>
-                </div>
-            </div>
-
-            <div class="space-y-4">
-                <div class="flex items-center space-x-2 mb-2 px-1">
-                    <i class="fa-solid fa-magnifying-glass-chart text-blue-600 text-xl"></i>
-                    <h3 class="text-xl font-bold text-gray-900">핵심 주장 검증 리포트</h3>
-                </div>
-                {analysis_html}
-            </div>
-
-            <div class="text-center pt-8 pb-4">
-                <p class="text-xs text-gray-400">Powered by Veritas Lens AI • Tavily Search API</p>
+            <div class="bg-gray-50 rounded-xl p-5 border border-gray-100">
+                <h3 class="font-bold text-gray-700 mb-2 text-sm uppercase tracking-wide">화자/논조 성향</h3>
+                <p class="text-gray-900 font-medium text-lg leading-tight">{stance}</p>
             </div>
         </div>
-    </body>
-    </html>
-    """)
+
+        <div class="space-y-4">
+            <div class="flex items-center space-x-2 mb-2 px-1">
+                <i class="fa-solid fa-magnifying-glass-chart text-blue-600 text-xl"></i>
+                <h3 class="text-xl font-bold text-gray-900">핵심 주장 검증 리포트</h3>
+            </div>
+            {analysis_html}
+        </div>
+
+        <div class="text-center pt-8 pb-4">
+            <p class="text-xs text-gray-400">Powered by Veritas Lens AI • Tavily Search API</p>
+        </div>
+    </div>
+    """
+    
     st.markdown(final_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
@@ -398,3 +369,4 @@ if submit_btn and url_input:
                     render_report(meta, result)
             except Exception as e:
                 st.error(f"오류 발생: {e}")
+
