@@ -10,8 +10,8 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 # --- 페이지 설정 ---
 st.set_page_config(page_title="Veritas Lens", page_icon="👁️", layout="wide")
 
-# --- CSS 커스텀 ---
-st.markdown("""
+# --- CSS 커스텀 (들여쓰기 제거를 위해 dedent 적용) ---
+st.markdown(textwrap.dedent("""
     <style>
     .main-title {font-size: 3rem; font-weight: 800; color: #111827; letter-spacing: -0.05rem;}
     .sub-title {font-size: 1.2rem; color: #6B7280; margin-bottom: 2rem;}
@@ -23,13 +23,12 @@ st.markdown("""
     }
     div.stButton > button:hover {background-color: #1D4ED8; transform: scale(1.02);}
     </style>
-""", unsafe_allow_html=True)
+"""), unsafe_allow_html=True)
 
 # --- 사이드바: API 설정 ---
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # OpenAI & Tavily
     if "OPENAI_API_KEY" in st.secrets:
         openai_api_key = st.secrets["OPENAI_API_KEY"]
     else:
@@ -40,7 +39,6 @@ with st.sidebar:
     else:
         tavily_api_key = st.text_input("Tavily API Key", type="password")
         
-    # RapidAPI Key
     st.markdown("---")
     st.subheader("📺 YouTube Unlocker")
     if "RAPIDAPI_KEY" in st.secrets:
@@ -50,7 +48,6 @@ with st.sidebar:
         
     st.info("👁️ **Veritas Lens**는 최신 AI와 검색 기술을 결합하여 콘텐츠의 진실을 탐구합니다.")
     
-    # [UX 개선] 입력 초기화 버튼 (Streamlit 방식)
     if st.button("🔄 새로운 분석 시작하기"):
         st.rerun()
 
@@ -109,16 +106,9 @@ def get_transcript_via_api(video_url, api_key):
     except Exception as e:
         raise Exception(f"자막 추출 중 오류 발생: {e}")
 
-# --- RAG 심층 분석 파이프라인 (캐싱 적용) ---
+# --- RAG 심층 분석 파이프라인 ---
 @st.cache_data(show_spinner=False)
 def deep_analyze_with_search(text, _llm, _search_tool):
-    """
-    개선 사항:
-    1. 요약과 팩트체크 통합
-    2. 출처(Source) 명시 요구
-    """
-    
-    # 1단계: 주장 추출
     with st.spinner("🕵️‍♀️ 1단계: 검증이 필요한 핵심 주장을 선별 중..."):
         extraction_prompt = PromptTemplate.from_template("""
         다음 텍스트에서 사실 검증이 필요한 '가장 핵심적인 주장' 3가지를 추출해줘.
@@ -135,19 +125,16 @@ def deep_analyze_with_search(text, _llm, _search_tool):
         claims_result = _llm.invoke(extraction_prompt.format(text=text[:10000])).content
         queries = [line.replace("-", "").strip() for line in claims_result.split('\n') if line.strip().startswith("-")]
 
-    # 2단계: 웹 검색
     search_context = ""
     with st.spinner(f"🌐 2단계: 웹에서 팩트 확인 중... ({len(queries)}건)"):
         for query in queries[:3]:
             try:
                 search_results = _search_tool.invoke(query)
-                # 검색 결과 요약 (URL 포함)
                 evidence = "\n".join([f"- 내용: {res['content'][:200]} (출처: {res['url']})" for res in search_results])
                 search_context += f"\n[검색 키워드: {query}]\n{evidence}\n"
             except Exception as e:
                 pass
 
-    # 3단계: 종합 분석 (프롬프트 대폭 수정)
     with st.spinner("🧠 3단계: 근거 자료와 대조하여 통합 리포트 작성 중..."):
         final_prompt = PromptTemplate.from_template("""
         당신은 팩트와 논리를 최우선으로 하는 미디어 분석가입니다.
@@ -185,11 +172,10 @@ def deep_analyze_with_search(text, _llm, _search_tool):
           REASON: (이유)
           SOURCE: (URL)
         """)
-        
         return _llm.invoke(final_prompt.format(text=text[:10000], context=search_context)).content
 
 # ---------------------------------------------------------
-# 🎨 UI 렌더링 함수 (공통)
+# 🎨 UI 렌더링 함수 (수정됨: dedent 및 문자열 처리 강화)
 # ---------------------------------------------------------
 def render_report(meta, result):
     # 파싱 로직
@@ -197,7 +183,6 @@ def render_report(meta, result):
     stance = "분석 불가"
     comment = "정보 없음"
     analysis_data = []
-
     current_item = {}
     
     lines = result.split('\n')
@@ -219,7 +204,7 @@ def render_report(meta, result):
     
     if current_item: analysis_data.append(current_item)
 
-    # 점수 스타일
+    # 스타일 설정
     if score >= 70:
         score_theme = ("text-green-600", "border-green-400", "bg-green-50", "신뢰도 높음")
     elif score >= 40:
@@ -227,8 +212,8 @@ def render_report(meta, result):
     else:
         score_theme = ("text-red-600", "border-red-400", "bg-red-50", "신뢰도 낮음")
 
-    # 분석 카드 HTML 생성 (리스트 컴프리헨션 사용으로 들여쓰기 문제 최소화)
-    cards_html_list = []
+    # 분석 카드 HTML 조립 (리스트 컴프리헨션으로 공백 제거)
+    cards_html = []
     for idx, item in enumerate(analysis_data, 1):
         verdict = item.get('verdict', '판단보류')
         if "사실" in verdict or "True" in verdict:
@@ -249,15 +234,15 @@ def render_report(meta, result):
         if source_url and "http" in source_url:
             source_html = f"""<div class="mt-3 pt-2 border-t border-dashed border-gray-200"><a href="{source_url}" target="_blank" class="inline-flex items-center text-xs text-blue-600 hover:text-blue-800 transition-colors"><i class="fa-solid fa-link mr-1.5"></i> 검증 출처 보기 (Source)</a></div>"""
 
-        # 각 카드 HTML을 한 줄로 압축 (들여쓰기 이슈 방지)
+        # 카드 HTML 한 줄로 만들기 (들여쓰기 이슈 방지)
         card = f"""<div class="bg-white rounded-xl border {border_color} p-5 shadow-sm hover:shadow-md transition-shadow duration-300"><div class="flex justify-between items-start mb-2"><div class="flex items-center space-x-2"><span class="flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-600 text-xs font-bold">{idx}</span><h4 class="font-bold text-gray-900 text-lg">{item.get('claim', '')}</h4></div><div class="flex-shrink-0 ml-2">{badge}</div></div><p class="text-gray-700 text-sm leading-relaxed pl-8 mb-1">{item.get('reason', '')}</p><div class="pl-8">{source_html}</div></div>"""
-        cards_html_list.append(card)
+        cards_html.append(card)
 
-    analysis_html = "".join(cards_html_list)
+    analysis_section = "".join(cards_html)
 
-    # 최종 HTML 조립 (textwrap 사용 안함 - 직접 문자열 결합)
-    # head/body 태그 제거하고 div만 남김 (Streamlit은 iframe이 아니므로 head/body가 중복되면 꼬일 수 있음)
-    final_html = f"""
+    # ⚠️ 중요: HTML 문자열 생성 시 textwrap.dedent를 사용하여
+    # 맨 앞의 불필요한 공백을 완전히 제거합니다.
+    final_html = textwrap.dedent(f"""
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <div style="font-family: 'Noto Sans KR', sans-serif; max-width: 56rem; margin: 0 auto; padding-top: 1rem;">
         
@@ -304,14 +289,14 @@ def render_report(meta, result):
                 <i class="fa-solid fa-magnifying-glass-chart text-blue-600 text-xl"></i>
                 <h3 class="text-xl font-bold text-gray-900">핵심 주장 검증 리포트</h3>
             </div>
-            {analysis_html}
+            {analysis_section}
         </div>
 
         <div class="text-center pt-8 pb-4">
             <p class="text-xs text-gray-400">Powered by Veritas Lens AI • Tavily Search API</p>
         </div>
     </div>
-    """
+    """)
     
     st.markdown(final_html, unsafe_allow_html=True)
 
@@ -321,7 +306,7 @@ def render_report(meta, result):
 st.markdown('<div class="main-title">Veritas Lens <span style="font-size:1.5rem; color:#3B82F6;">Beta</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">See the truth behind the noise. URL 하나로 팩트와 편향성을 꿰뚫어 보세요.</div>', unsafe_allow_html=True)
 
-# [UX 개선] Form을 사용하여 엔터키 입력 지원 및 명시적 제출
+# Form을 사용하여 엔터키 입력 지원 및 명시적 제출
 with st.form("analyze_form"):
     col1, col2 = st.columns([4, 1])
     with col1:
@@ -369,4 +354,3 @@ if submit_btn and url_input:
                     render_report(meta, result)
             except Exception as e:
                 st.error(f"오류 발생: {e}")
-
